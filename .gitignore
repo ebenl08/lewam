@@ -13,6 +13,7 @@ logs/
 lightning_logs/
 outputs/
 multirun/
+/data/
 *.log
 events.out.tfevents.*
 results.jsonl

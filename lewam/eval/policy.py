@@ -147,6 +147,8 @@ class LeWAMPolicy(BasePolicy):
         if replan:
             history_rows = {i: [s for s in history_steps(int(self._step[i]), hist_len, self.history_stride) if s >= 0]
                             for i in replan}
+            
+            # lazy latent cache, so if cache miss then encode on the fly
             missing_latents = [(i, s) for i in replan for s in history_rows[i] if s not in self._latents[i]]
             if missing_latents:
                 pixels = torch.stack([self._frames[i][s] for i, s in missing_latents])            # (M, views, C, H, W)
@@ -154,6 +156,7 @@ class LeWAMPolicy(BasePolicy):
                 for (i, s), z in zip(missing_latents, latents):
                     self._latents[i][s] = z
 
+            # history slot and padding
             R, D = len(replan), self.model.z_dim
             history = torch.zeros(R, n_views, hist_len, D, device=self.device)
             history_pad = torch.ones(R, hist_len, dtype=torch.bool, device=self.device)
@@ -164,12 +167,16 @@ class LeWAMPolicy(BasePolicy):
             if n_views == 1:
                 history = history[:, 0]
 
+            # The actual action planner
             actions = self._propose(info_dict, replan, history, history_pad)       # the actions to execute
+            
+            # Action postprocessing and store to buffer
             raw = (actions * self._action_std + self._action_mean).cpu()           # (R, executed actions, action_dim)
             for row, i in enumerate(replan):
                 self._action_buffer[i].extend(raw[row])
                 self._steps_left[i] = max(self._steps_left[i] - raw.shape[1] / self.frameskip, 1.0)
 
+        # Extract action from buffer
         action = torch.full((num_envs, self.action_dim), float("nan"))
         for i in range(num_envs):
             if not dead[i]:
@@ -206,4 +213,6 @@ class LeWAMPolicy(BasePolicy):
         if self.goal_type != "none":
             goal = dict(z_goal=self._goal_latents(info_dict, replan), h_norm=self._h_norm(replan))
         actions = self.model.predict_actions(history, history_pad, generator=self._flow_generator(self.device), **goal)
+        
+        # The action is filtered here
         return actions[:, :self.num_exec_actions]

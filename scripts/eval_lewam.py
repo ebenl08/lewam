@@ -13,6 +13,7 @@ Check the README for more details on eval protocols and modes
 """
 
 import importlib
+import json
 import time
 from pathlib import Path
 
@@ -69,6 +70,20 @@ def register_env(env_name: str) -> None:
         importlib.import_module(module)
 
 
+def write_outputs(out: Path, cfg: DictConfig, metrics: dict, episodes: list[int], starts: list[int], wall_s: float) -> None:
+    """config.json + results.txt in the format of the stable-worldmodel planner runs, plus the drawn episodes."""
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "config.json").write_text(json.dumps(OmegaConf.to_container(cfg, resolve=True), indent=1))
+    successes = ", ".join(str(bool(s)) for s in np.asarray(metrics["episode_successes"]))
+    (out / "results.txt").write_text(
+        f"seed: {cfg.seed}\n"
+        f"Metrics: {{'success_rate': {metrics['success_rate']}, 'episode_successes': array([{successes}])}}\n"
+        f"episodes: {[int(e) for e in episodes]}\n"
+        f"starts: {[int(s) for s in starts]}\n"
+        f"Eval time: {wall_s:.1f}s\n"
+    )
+
+
 def set_episode_budgets(world: swm.World, goal_offsets: list[int]) -> None:
     """Give each env twice its own episode's goal offset as its step budget."""
     assert world.num_envs == len(goal_offsets), f"{world.num_envs} envs for {len(goal_offsets)} episodes"
@@ -117,7 +132,10 @@ def main(cfg: DictConfig):
         print(f"[eval] task_only: no goal set in the env -> success = env.is_success()['task'] only; "
               f"callables {[c.get('method') for c in callables]}", flush=True)
 
-    results_path = Path(swm.data.utils.get_cache_dir(), "eval", eval_cfg.mode, cfg.policy)
+    if cfg.output_dir:
+        results_path = Path(cfg.output_dir)
+    else:
+        results_path = Path(swm.data.utils.get_cache_dir(), "eval", eval_cfg.mode, cfg.policy)
     results_path.mkdir(parents=True, exist_ok=True)
     world.set_policy(policy)
     start_time = time.time()
@@ -128,11 +146,16 @@ def main(cfg: DictConfig):
         eval_budget=eval_cfg.eval_budget,
         episodes_idx=episodes,
         callables=callables,
-        video=results_path,
+        video=results_path if eval_cfg.save_video else None,
     )
     wall_s = time.time() - start_time
     print(f"==== {eval_cfg.mode} RESULTS ====")
     print(metrics)
+
+    if cfg.output_dir:
+        write_outputs(results_path, cfg, metrics, episodes, starts, wall_s)
+        print("wrote", results_path)
+        return
 
     with (results_path / f"{eval_cfg.mode}_{cfg.policy}_results.txt").open("a") as f:
         f.write("\n==== CONFIG ====\n")

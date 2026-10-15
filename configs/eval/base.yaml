@@ -5,6 +5,7 @@ seed: 42
 policy: ???                 # run name under $STABLEWM_HOME/checkpoints
 seq_which: best             # best | latest checkpoint of the run
 cache_dir: null             # dataset root; null = $STABLEWM_HOME
+output_dir: null            # set: write config.json + results.txt (+ videos with eval.save_video) here
 
 world:
   num_envs: ${eval.num_eval}
@@ -35,6 +36,9 @@ eval:
   rollout_steps: 1          # dynamics steps imagined per plan
   plan_random_candidates: false
   plan_goal_time: true      # score each plan at its goal step and stop imagining there
+  horizon_schedule: adaptive  # adaptive: count down to the dataset goal time | constant: goal rollout_steps ahead every replan
+  plan_cost_window: 1       # goal cost averaged over this many imagined steps up to the scoring step
+  save_video: true          # one mp4 per env
   # gradient planning
   grad_steps: 5
   grad_lr: 0.05

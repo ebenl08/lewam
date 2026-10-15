@@ -42,6 +42,8 @@ def build_policy(
         exec_actions_per_plan=eval_cfg.exec_actions,
         plan_random_candidates=eval_cfg.plan_random_candidates,
         plan_goal_time=eval_cfg.plan_goal_time,
+        horizon_schedule=eval_cfg.horizon_schedule,
+        plan_cost_window=eval_cfg.plan_cost_window,
         grad_steps=eval_cfg.grad_steps,
         grad_lr=eval_cfg.grad_lr,
         grad_clip=eval_cfg.grad_clip,
