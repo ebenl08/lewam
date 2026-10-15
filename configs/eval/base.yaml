@@ -39,6 +39,7 @@ eval:
   horizon_schedule: adaptive  # adaptive: count down to the dataset goal time | constant: goal rollout_steps ahead every replan
   plan_cost_window: 1       # goal cost averaged over this many imagined steps up to the scoring step
   save_video: true          # one mp4 per env
+  timing: null              # null | single (one env per plan call, batch-1 latency) | batched; writes timing.json
   # gradient planning
   grad_steps: 5
   grad_lr: 0.05

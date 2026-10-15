@@ -17,8 +17,6 @@ JOBS=${JOBS:-logs/${GROUP}/jobs.tsv}
 QUEUE=${QUEUE:-logs/${GROUP}/queue.tsv}
 FAILED=logs/${GROUP}/failed.tsv
 TEST_RUN=${TEST_RUN:-0}
-# Reacher repro: extra overrides of the reacher task config (P1 open question 1)
-REACHER_EXTRA=${REACHER_EXTRA:-eval.dataset_name=reacher}
 mkdir -p logs/${GROUP}
 
 gpu_uuid() {  # UUID of nvidia-smi GPU $1; CUDA indices skip smi GPU 2, so pin by UUID
@@ -45,7 +43,7 @@ run_job() {  # $1 gpu, then the job columns
     out=data/${GROUP}/p1/repro/${env}/${seed}
     task=(--config-name="$env" policy="lewam-${env}" eval.num_eval=50)
     [[ $env == pusht ]] && task+=(eval.dataset_name=pusht_expert_train)  # byte-identical to the HF pusht data
-    [[ $env == reacher ]] && task+=($REACHER_EXTRA)
+    [[ $env == reacher ]] && task[0]=--config-name=reacher_original     # model-card setting of lewam-reacher
   else
     out=data/${GROUP}/p1/runs/${env}/${arm}/h${h}_rh${rh}/${seed}
     task=(--config-name=pusht policy=lewam-pusht eval.dataset_name=pusht_expert_train eval.num_eval=30

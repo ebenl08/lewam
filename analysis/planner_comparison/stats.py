@@ -1,7 +1,7 @@
 """Statistics shared by the LeWAM planner comparison: per-episode loader, Welch, TOST, best cell.
 
-Copies of playground/stable-worldmodel/src/leflow/analysis/welch_tost.py (episode_vectors, welch, tost, row, HEADER)
-and best_cell.py (cell_matrix, best_cell_stats), and percentile_ci of cem_window_pusht_bootstrap.py. Same names and
+Copies of playground/stable-worldmodel/src/leflow/analysis/welch_tost.py (episode_vectors, welch, tost, row, HEADER,
+pooled_scores, best_cell, best_row) and best_cell.py (cell_matrix, best_cell_stats), and percentile_ci of cem_window_pusht_bootstrap.py. Same names and
 logic; no import from that project, so its runs are only read.
 """
 
@@ -77,6 +77,26 @@ HEADER = ['comparison', 'env', 'window', 'h', 'rh', 'n_episodes_a', 'n_episodes_
           'se', 'welch_df', 'welch_t', 'p_welch', 'ci95_low', 'ci95_high', 'p_bonf', 'ci_bonf_low', 'ci_bonf_high',
           'sig_uncorrected', 'sig_bonf'] + [f'{name}{m}' for m in MARGINS for name in
                                            ('tost_p_pm', 'tost_p_bonf_pm', 'equiv_pm', 'equiv_bonf_pm')]
+
+
+def pooled_scores(per_cell):
+    """One score per episode: its success averaged over the cells (the episodes repeat across cells of a seed)."""
+    seeds = set.intersection(*[set(v) for v in per_cell.values()])
+    seeds = [s for s in sorted(seeds) if len({len(v[s]) for v in per_cell.values()}) == 1]
+    return np.concatenate([np.mean([v[s] for v in per_cell.values()], axis=0) for s in seeds])
+
+
+def best_cell(per_cell):
+    """Cell with the highest mean SR (mean over seeds of the per-seed success rate)."""
+    return max(per_cell, key=lambda cell: np.mean([v.mean() for v in per_cell[cell].values()]))
+
+
+def best_row(comparison, env, window, per_a, per_b):
+    """Welch / TOST row on the episodes of the best cell of each arm (the cells can differ); one test, not adjusted."""
+    cell_a, cell_b = best_cell(per_a), best_cell(per_b)
+    a, b = (np.concatenate(list(per[cell].values())) for per, cell in ((per_a, cell_a), (per_b, cell_b)))
+    cells = f'h{cell_a[0]}_rh{cell_a[1]} vs h{cell_b[0]}_rh{cell_b[1]}'
+    return row(comparison, env, window, 'best', cells, a, b, adjust=False)
 
 
 def percentile_ci(samples):

@@ -11,6 +11,7 @@ import torch
 from omegaconf import OmegaConf
 
 from lewam.eval.planners import LeWAMPlanner
+from lewam.eval.timing import ReplanTimer, SingleEnvPlanning
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "analysis" / "planner_comparison"))
@@ -100,6 +101,50 @@ def test_results_round_trip(tmp_path):
     vectors = episode_vectors([str(tmp_path / "*")])
     assert list(vectors) == [30531]
     assert np.array_equal(vectors[30531], successes.astype(float))
+
+
+class _FakePlanner:
+    """Stands in for LeWAMPlanner: one row of actions per env, encodes the goal inside the plan."""
+
+    def __init__(self):
+        self.plan_calls = []
+
+    def _enc(self, x):
+        return x * 2
+
+    def _propose(self, info_dict, replan, history, history_pad):
+        self.plan_calls.append(list(replan))
+        self._enc(history)  # goal encoding inside the plan
+        return history[:, :1] + 1
+
+
+class _FakeSingleEnvPlanner(SingleEnvPlanning, _FakePlanner):
+    pass
+
+
+def test_single_env_planning_one_call_per_env():
+    planner = _FakeSingleEnvPlanner()
+    history = torch.arange(12.0).view(4, 3)
+    out = planner._propose({}, [0, 2, 5, 7], history, torch.zeros(4, 3, dtype=torch.bool))
+    assert planner.plan_calls == [[0], [2], [5], [7]]
+    assert torch.equal(out, history[:, :1] + 1)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
+@pytest.mark.parametrize("single", [True, False])
+def test_replan_timer_counts(single):
+    planner = _FakeSingleEnvPlanner() if single else _FakePlanner()
+    timer = ReplanTimer(planner, skip_replans=1)
+    history = torch.ones(4, 3, device="cuda")
+    for _ in range(3):  # get_action: history encoding, then the plan
+        planner._enc(history)
+        planner._propose({}, [0, 1, 2, 3], history, torch.zeros(4, 3, dtype=torch.bool, device="cuda"))
+    summary = timer.summary()
+    assert (summary["replans_total"], summary["replans_kept"], summary["plans_kept"]) == (3, 2, 8)
+    assert all(len(row["plan_ms"]) == (4 if single else 0) for row in summary["replans"])
+    assert summary["replan_encode_ms"]["n"] == 2       # goal encodings inside the plan are not counted
+    assert (summary["plan_ms"] is not None) == single
+    assert summary["plans_per_s"] > 0
 
 
 @pytest.mark.skipif(not (Path.home() / ".stable_worldmodel" / "checkpoints" / "lewam-pusht").exists(),

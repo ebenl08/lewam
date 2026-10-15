@@ -1,0 +1,24 @@
+# Goal reaching on the original LeWM Reacher data, as on the lewam-reacher model card: scene target hidden,
+# success = wrapped joint-angle match at threshold 0.05 (set_task_target_pos is not called, so the target stays hidden;
+# _install_wrapped_qpos_match applies the angle wrap that set_task_target_pos would otherwise install)
+defaults:
+  - base
+  - _self_
+
+world:
+  env_name: swm/ReacherVisibleTargetDMControl-v0
+  task: qpos_match
+
+eval:
+  goal_offset_steps: 25
+  eval_budget: 50
+  dataset_name: reacher
+  callables:
+    - method: set_state
+      args:
+        qpos: {value: qpos}
+        qvel: {value: qvel}
+    - method: set_target_qpos
+      args:
+        target_qpos: {value: goal_qpos}
+    - method: _install_wrapped_qpos_match
