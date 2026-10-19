@@ -29,6 +29,7 @@ from lewam import views
 from lewam.eval.build import build_policy
 from lewam.eval.episodes import get_dataset, img_transform, sample_eval_episodes
 from lewam.eval.loaders import load_lewam
+from lewam.eval.timing import ReplanTimer
 
 # register non-standard envs
 ENV_MODULES = {
@@ -138,6 +139,10 @@ def main(cfg: DictConfig):
         results_path = Path(swm.data.utils.get_cache_dir(), "eval", eval_cfg.mode, cfg.policy)
     results_path.mkdir(parents=True, exist_ok=True)
     world.set_policy(policy)
+    timer = None
+    if eval_cfg.get("timing"):
+        assert eval_cfg.timing in ("single", "batched"), eval_cfg.timing
+        timer = ReplanTimer(policy, detail=eval_cfg.get("timing_detail"))
     start_time = time.time()
     metrics = world.evaluate(
         dataset=dataset,
@@ -151,6 +156,10 @@ def main(cfg: DictConfig):
     wall_s = time.time() - start_time
     print(f"==== {eval_cfg.mode} RESULTS ====")
     print(metrics)
+    if timer is not None:
+        timer.write(results_path / "timing.json", eval_wall_s=wall_s)
+        summary = timer.summary(wall_s)
+        print("[timing]", {k: summary[k] for k in ("replans_kept", "plans_kept", "plan_ms", "plans_per_s")}, flush=True)
 
     if cfg.output_dir:
         write_outputs(results_path, cfg, metrics, episodes, starts, wall_s)

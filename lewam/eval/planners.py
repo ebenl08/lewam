@@ -1,5 +1,7 @@
 """Planning with LeWAM"""
 
+from contextlib import nullcontext
+
 import numpy as np
 import torch
 
@@ -102,6 +104,10 @@ class LeWAMPlanner(LeWAMPolicy):
         print(f"[plan] {plan_mode}: {self.rollout_steps} dynamics steps imagined per plan, "
               f"{self.exec_actions_per_plan} actions executed per replan, {horizon_schedule} horizon, "
               f"cost window {self.plan_cost_window}", flush=True)
+
+    def _stage(self, name: str):
+        """Timing hook around inline planner steps; ReplanTimer replaces it. No-op otherwise."""
+        return nullcontext()
 
     def _next_latent(self, z_imag: torch.Tensor) -> torch.Tensor:
         """Each camera's imagined latent one dynamics step ahead"""
@@ -394,66 +400,77 @@ class LeWAMPlanner(LeWAMPolicy):
         n_envs, num_proposals, fs = history.shape[0], self.num_proposals, self.frameskip
         env_rows = torch.arange(n_envs, device=self.device)
         with torch.no_grad():
-            history_rep = history.repeat_interleave(num_proposals, 0)
-            pad_rep = history_pad.repeat_interleave(num_proposals, 0)
-            goal_rep = z_goal.repeat_interleave(num_proposals, 0)
-            steps_rep = steps_to_goal.repeat_interleave(num_proposals, 0) if steps_to_goal is not None else None
+            with self._stage("proposal_setup"):
+                history_rep = history.repeat_interleave(num_proposals, 0)
+                pad_rep = history_pad.repeat_interleave(num_proposals, 0)
+                goal_rep = z_goal.repeat_interleave(num_proposals, 0)
+                steps_rep = steps_to_goal.repeat_interleave(num_proposals, 0) if steps_to_goal is not None else None
             rollout_actions, rollout_cost = self._imagine_rollout(history_rep, pad_rep, goal_rep, steps_rep)
-            rollout_cost = rollout_cost.view(n_envs, num_proposals)
-            cheapest = rollout_cost.argmin(1)
-            rollout_plans = rollout_actions.view(n_envs, num_proposals, rollout_actions.shape[1], fs, -1)
-            warm_plan = rollout_plans[env_rows, cheapest].detach()
-            warm_cost = rollout_cost[env_rows, cheapest].detach()
+            with self._stage("warm_select"):
+                rollout_cost = rollout_cost.view(n_envs, num_proposals)
+                cheapest = rollout_cost.argmin(1)
+                rollout_plans = rollout_actions.view(n_envs, num_proposals, rollout_actions.shape[1], fs, -1)
+                warm_plan = rollout_plans[env_rows, cheapest].detach()
+                warm_cost = rollout_cost[env_rows, cheapest].detach()
         if self.grad_steps <= 0:
             return warm_plan.reshape(n_envs, warm_plan.shape[1] * fs, -1)
 
-        generator = self._flow_generator(self.device)
-        if self.grad_all_k:
-            init_plan = rollout_plans.reshape(n_envs * num_proposals, rollout_actions.shape[1], fs, -1).detach()
-            init_cost = rollout_cost.view(n_envs * num_proposals)
-            opt_history, opt_pad, opt_goal, opt_steps = history_rep, pad_rep, goal_rep, steps_rep
-        else:
-            init_plan, init_cost = warm_plan, warm_cost
-            opt_history, opt_pad, opt_goal, opt_steps = history, history_pad, z_goal, steps_to_goal
-            
-        state_noise = [self.model.sample_state_noise(init_plan.shape[0], self.device, generator)
-                       for _ in range(self.rollout_steps)]      # fixed per replan
-        best_plan, best_cost = init_plan.clone(), init_cost.clone()
-        plan = init_plan.clone().requires_grad_(True)
-        optimizer = torch.optim.Adam([plan], lr=self.grad_lr)
+        with self._stage("refine_setup"):
+            generator = self._flow_generator(self.device)
+            if self.grad_all_k:
+                init_plan = rollout_plans.reshape(n_envs * num_proposals, rollout_actions.shape[1], fs, -1).detach()
+                init_cost = rollout_cost.view(n_envs * num_proposals)
+                opt_history, opt_pad, opt_goal, opt_steps = history_rep, pad_rep, goal_rep, steps_rep
+            else:
+                init_plan, init_cost = warm_plan, warm_cost
+                opt_history, opt_pad, opt_goal, opt_steps = history, history_pad, z_goal, steps_to_goal
+
+            state_noise = [self.model.sample_state_noise(init_plan.shape[0], self.device, generator)
+                           for _ in range(self.rollout_steps)]      # fixed per replan
+            best_plan, best_cost = init_plan.clone(), init_cost.clone()
+            plan = init_plan.clone().requires_grad_(True)
+            optimizer = torch.optim.Adam([plan], lr=self.grad_lr)
         with torch.enable_grad():
             for iteration in range(self.grad_steps + 1):
                 cost = self._rollout_cost_differentiable(opt_history, opt_pad, opt_goal, opt_steps, plan, state_noise)
-                with torch.no_grad():
+                with self._stage("best_update"), torch.no_grad():
                     better = cost < best_cost
                     best_cost = torch.where(better, cost.detach(), best_cost)
                     best_plan[better] = plan.detach()[better]
                 if iteration == self.grad_steps:
                     break
-                loss = cost.sum()
-                if self.grad_tr > 0:
-                    loss = loss + self.grad_tr * ((plan - init_plan) ** 2).sum()
-                optimizer.zero_grad()
-                loss.backward()
-                if self.grad_clip > 0:
-                    torch.nn.utils.clip_grad_norm_([plan], self.grad_clip)
-                optimizer.step()
-                if self.grad_action_clip > 0:
-                    with torch.no_grad():
-                        plan.clamp_(-self.grad_action_clip, self.grad_action_clip)
+                with self._stage("loss"):
+                    loss = cost.sum()
+                    if self.grad_tr > 0:
+                        loss = loss + self.grad_tr * ((plan - init_plan) ** 2).sum()
+                with self._stage("zero_grad"):
+                    optimizer.zero_grad()
+                with self._stage("backward"):
+                    loss.backward()
+                with self._stage("grad_clip"):
+                    if self.grad_clip > 0:
+                        torch.nn.utils.clip_grad_norm_([plan], self.grad_clip)
+                with self._stage("adam_step"):
+                    optimizer.step()
+                with self._stage("action_clamp"):
+                    if self.grad_action_clip > 0:
+                        with torch.no_grad():
+                            plan.clamp_(-self.grad_action_clip, self.grad_action_clip)
 
-        if self.grad_all_k:
-            cost_per_proposal = best_cost.view(n_envs, num_proposals)
-            cheapest = cost_per_proposal.argmin(1)
-            best_plan = best_plan.view(n_envs, num_proposals, best_plan.shape[1], fs, -1)[env_rows, cheapest]
-            best_cost = cost_per_proposal[env_rows, cheapest]
+        with self._stage("final_select"):
+            if self.grad_all_k:
+                cost_per_proposal = best_cost.view(n_envs, num_proposals)
+                cheapest = cost_per_proposal.argmin(1)
+                best_plan = best_plan.view(n_envs, num_proposals, best_plan.shape[1], fs, -1)[env_rows, cheapest]
+                best_cost = cost_per_proposal[env_rows, cheapest]
 
-        stats = self.__dict__.setdefault("_grad_stats", dict(n=0, improved=0, warm_cost=0.0, best_cost=0.0, plan_change=0.0))
-        stats["n"] += n_envs
-        stats["improved"] += int((best_cost < warm_cost).sum())
-        stats["warm_cost"] += float(warm_cost.sum())
-        stats["best_cost"] += float(best_cost.sum())
-        stats["plan_change"] += float((best_plan.reshape(n_envs, -1) - warm_plan.reshape(n_envs, -1)).norm(dim=1).sum())
+        with self._stage("stats"):  # float() calls: CPU-GPU syncs
+            stats = self.__dict__.setdefault("_grad_stats", dict(n=0, improved=0, warm_cost=0.0, best_cost=0.0, plan_change=0.0))
+            stats["n"] += n_envs
+            stats["improved"] += int((best_cost < warm_cost).sum())
+            stats["warm_cost"] += float(warm_cost.sum())
+            stats["best_cost"] += float(best_cost.sum())
+            stats["plan_change"] += float((best_plan.reshape(n_envs, -1) - warm_plan.reshape(n_envs, -1)).norm(dim=1).sum())
         if stats["n"] % 50 < n_envs:
             print(f"[grad] {stats['improved']}/{stats['n']} replans improved on the warm start; mean cost "
                   f"{stats['warm_cost'] / stats['n']:.4f} -> {stats['best_cost'] / stats['n']:.4f}; mean plan change "

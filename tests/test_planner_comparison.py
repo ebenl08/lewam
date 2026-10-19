@@ -147,8 +147,58 @@ def test_replan_timer_counts(single):
     assert summary["plans_per_s"] > 0
 
 
-@pytest.mark.skipif(not (Path.home() / ".stable_worldmodel" / "checkpoints" / "lewam-pusht").exists(),
-                    reason="needs the lewam-pusht checkpoint")
+needs_checkpoint = pytest.mark.skipif(
+    not (Path.home() / ".stable_worldmodel" / "checkpoints" / "lewam-pusht").exists(), reason="needs the lewam-pusht checkpoint")
+
+
+@needs_checkpoint
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
+@pytest.mark.parametrize("detail", [None, "planner", "model", "mot"])
+def test_stage_timer_keeps_plans_and_counts_calls(detail):
+    """Timed plans equal untimed ones; calls per plan match the planner at h = 5 (N = 32, J = 5, 8 flow steps)."""
+    from lewam.eval.loaders import load_lewam
+    from lewam.eval.timing import SingleEnvLeWAMPlanner
+
+    model, cfg = load_lewam("lewam-pusht")
+    model = model.cuda().eval().requires_grad_(False)
+    kwargs = dict(frameskip=int(cfg["fs"]), action_dim=int(cfg["action_raw_dim"]), h0=np.array([5.0, 5.0, 5.0]),
+                  flow_seed=0, plan_mode="grad", rollout_steps=5, exec_actions_per_plan=5, grad_all_k=True,
+                  grad_tr=0.01, horizon_schedule="constant")
+    torch.manual_seed(0)
+    history = torch.randn(3, int(cfg["history_len"]), model.z_dim, device="cuda")
+    pad = torch.zeros(3, int(cfg["history_len"]), dtype=torch.bool, device="cuda")
+    z_goal = torch.randn(3, model.z_dim, device="cuda")
+
+    plans, timer = [], None
+    for timed in (False, True):
+        planner = SingleEnvLeWAMPlanner(model, cfg, **kwargs)
+        planner.set_env(type("Env", (), {"num_envs": 3})())
+        planner._goal_latents = lambda info_dict, replan, z_goal=z_goal: z_goal[replan]
+        if timed:
+            timer = ReplanTimer(planner, skip_replans=1, detail=detail)
+        plans.append([planner._propose({}, [0, 1, 2], history, pad) for _ in range(2)])
+    assert all(torch.equal(a, b) for a, b in zip(*plans))
+
+    tree = timer.summary()["tree"]
+    per_plan = {path: entry["calls_per_plan"] for path, entry in tree.items()}
+    assert per_plan["proposals"] == per_plan["refine_setup" if detail else "proposals"] == 1
+    assert per_plan["refine_forward"] == 6
+    if detail is None:
+        return
+    assert per_plan["proposals/policy_sample"] == per_plan["proposals/dynamics_step"] == 5
+    assert per_plan["refine_forward/dynamics_step"] == 30
+    assert per_plan["backward"] == per_plan["adam_step"] == 5
+    if detail in ("model", "mot"):
+        assert per_plan["proposals/policy_sample/forward_mot"] == 40
+        assert per_plan["refine_forward/dynamics_step/forward_mot"] == 30
+    if detail == "mot":
+        assert per_plan["proposals/policy_sample/forward_mot/blocks"] == 40
+    for path, entry in tree.items():  # children never take longer than their parent
+        children = [e["gpu_ms"] for p, e in tree.items() if p.rsplit("/", 1)[0] == path and "/" in p]
+        assert sum(children) <= 1.01 * entry["gpu_ms"], path
+
+
+@needs_checkpoint
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
 @pytest.mark.parametrize("rollout_steps,exec_actions", [(5, 5), (10, 10)])
 def test_defaults_match_original_planner(rollout_steps, exec_actions):

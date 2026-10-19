@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy import stats as scipy_stats
 
+from plot_style import DIVERGING, INK, MUTED, SEQUENTIAL, SURFACE, color, is_w1, style
 from stats import (ALPHA, BOOTSTRAPS, CELLS, HEADER, best_row, episode_vectors, percentile_ci, pooled_scores, row)
 
 REPO = Path(__file__).resolve().parents[2]
@@ -188,9 +189,12 @@ def heatmap(ax, grid, title, cmap, vmin, vmax):
     for i in range(grid.shape[0]):
         for j in range(grid.shape[1]):
             if not np.isnan(grid[i, j]):
-                ax.text(j, i, f'{grid[i, j]:.1f}', ha='center', va='center', fontsize=9)
+                level = (grid[i, j] - vmin) / (vmax - vmin)
+                dark = level > 0.6 if cmap is SEQUENTIAL else abs(level - 0.5) > 0.35
+                ax.text(j, i, f'{grid[i, j]:.1f}', ha='center', va='center', fontsize=9, color=SURFACE if dark else INK)
     ax.set_xticks(range(len(RECEDING)), [f'rh{r}' for r in RECEDING])
     ax.set_yticks(range(len(HORIZONS)), [f'h{h}' for h in HORIZONS])
+    ax.grid(False)
     ax.set_title(title, fontsize=10)
     return image
 
@@ -204,7 +208,7 @@ def plot_heatmaps(arms, rng):
         fig, axes = plt.subplots(2, 1 + len(baselines), figsize=(4 * (1 + len(baselines)), 7), constrained_layout=True)
         mean_sr = lambda arm: {c: np.mean(list(seed_rates(arms[arm])[c].values())) for c in CELLS if arms[arm][c]}
         for ax, arm in zip(axes[0], [lewam] + baselines):
-            image = heatmap(ax, cell_grid(mean_sr(arm)), label(arm), 'viridis', 0, 100)
+            image = heatmap(ax, cell_grid(mean_sr(arm)), label(arm), SEQUENTIAL, 0, 100)
         fig.colorbar(image, ax=axes[0], shrink=0.8, label='SR (%)')
         axes[1, 0].axis('off')
         for ax, arm in zip(axes[1, 1:], baselines):
@@ -213,7 +217,7 @@ def plot_heatmaps(arms, rng):
                 if len(arms[lewam][cell]) > 1 and len(arms[arm][cell]) > 1:
                     diffs[cell] = paired_bootstrap({cell: seed_rates(arms[lewam])[cell]},
                                                    {cell: seed_rates(arms[arm])[cell]}, rng)[0]
-            image = heatmap(ax, cell_grid(diffs), f'{label(lewam)} − {label(arm)}', 'RdBu', -60, 60)
+            image = heatmap(ax, cell_grid(diffs), f'{label(lewam)} − {label(arm)}', DIVERGING, -60, 60)
         fig.colorbar(image, ax=axes[1], shrink=0.8, label='SR difference (pp, shared seeds)')
         fig.savefig(OUT / f'pe1_heatmaps_{window}.png', dpi=150)
         plt.close(fig)
@@ -227,16 +231,18 @@ def plot_forest(pooled):
         for kind in ('pooled', 'best'):
             r = item[kind]
             diff, se, df = float(r[index['diff_a_minus_b']]), float(r[index['se']]), float(r[index['welch_df']])
-            entries.append((f"{label(item['a'])} − {label(item['b'])}, {kind}", diff, se, df, verdict(r)))
+            entries.append((f"{label(item['a'])} − {label(item['b'])}, {kind}", diff, se, df, verdict(r), item['b']))
     fig, ax = plt.subplots(figsize=(10, 0.4 * len(entries) + 1), constrained_layout=True)
-    ax.axvspan(-MARGIN, MARGIN, color='0.9')
-    ax.axvline(0, color='0.5', lw=0.8)
-    for y, (name, diff, se, df, text) in enumerate(entries):
-        for level, width in ((0.95, 1), (0.90, 3)):
+    ax.axvspan(-MARGIN, MARGIN, color='#efeee8', lw=0)
+    ax.axvline(0, color=MUTED, lw=0.8)
+    for y, (name, diff, se, df, text, other) in enumerate(entries):
+        ink = color(other)  # coloured by the comparison arm's family
+        for level, width in ((0.95, 1), (0.90, 3.5)):
             half = scipy_stats.t.ppf(1 - (1 - level) / 2, df) * se
-            ax.plot([diff - half, diff + half], [y, y], color='C0', lw=width)
-        ax.plot(diff, y, 'o', color='C3')
+            ax.plot([diff - half, diff + half], [y, y], color=ink, lw=width, solid_capstyle='butt')
+        ax.plot(diff, y, 'o', color=ink, mfc=SURFACE if is_w1(other) else ink, ms=6)
         ax.text(1.01, y, text, transform=ax.get_yaxis_transform(), va='center', fontsize=8)
+    ax.grid(axis='y', visible=False)
     ax.set_yticks(range(len(entries)), [e[0] for e in entries], fontsize=8)
     ax.invert_yaxis()
     ax.set_xlabel('SR difference a − b (pp)')
@@ -246,7 +252,8 @@ def plot_forest(pooled):
 
 def plot_profiles(arms):
     """P-N3: SR vs rh at h = 5 and h = 10, one line per planner, bootstrap-free mean ± 95% t CI over seeds."""
-    planners = ['native', 'grid_w1', 'grid_wH', 'cem_w1', 'cem_wH', 'leflow_cem_w1', 'leflow_cem_wH']
+    planners = ['native', 'grid_w1', 'grid_wH', 'cem_w1', 'cem_wH', 'leflow_cem_w1', 'leflow_cem_wH',
+                'icem_faithful_w1', 'icem_faithful_wH']
     fig, axes = plt.subplots(1, 2, figsize=(11, 4), constrained_layout=True, sharey=True)
     for ax, h in zip(axes, (5, 10)):
         receding = [rh for rh in RECEDING if rh <= h]
@@ -257,8 +264,9 @@ def plot_profiles(arms):
                 means.append(rates.mean() if len(rates) else np.nan)
                 halves.append(scipy_stats.t.ppf(0.975, len(rates) - 1) * rates.std(ddof=1) / np.sqrt(len(rates))
                               if len(rates) > 1 else np.nan)
-            style = '-' if arm in ('native', 'grid_w1', 'grid_wH') else '--'
-            ax.errorbar(range(len(receding)), means, yerr=halves, fmt=style + 'o', capsize=3, label=label(arm))
+            ink = color(arm)
+            ax.errorbar(range(len(receding)), means, yerr=halves, fmt='o', ls='--' if is_w1(arm) else '-', color=ink,
+                        mfc=SURFACE if is_w1(arm) else ink, capsize=3, lw=1.6, label=label(arm))
         ax.set_xticks(range(len(receding)), [f'rh{r}' for r in receding])
         ax.set_title(f'h = {h}')
         ax.set_ylim(0, 105)
@@ -278,11 +286,17 @@ def plot_anomaly(indices):
         mean = [values.get(n, (np.nan,) * 3)[0] for n in names]
         low = [values.get(n, (np.nan,) * 3)[1] for n in names]
         high = [values.get(n, (np.nan,) * 3)[2] for n in names]
-        ax.bar(xs, mean, width, label=label(arm),
-               yerr=[np.subtract(mean, low), np.subtract(high, mean)], capsize=2)
-    ax.axhline(0, color='0.3', lw=0.8)
+        ink = color(arm)
+        ax.bar(xs, mean, width, label=label(arm), color=SURFACE if is_w1(arm) else ink, edgecolor=ink,
+               hatch='////' if is_w1(arm) else None, linewidth=1.2,
+               yerr=[np.subtract(mean, low), np.subtract(high, mean)], capsize=2, error_kw={'ecolor': INK})
+    ax.axhline(0, color=MUTED, lw=0.8)
     ax.set_xticks(range(len(names)), names)
     ax.set_ylabel('SR points')
+    ax.set_title('P-N4: h = rh anomaly on PushT (seed bootstrap 95% CI)', fontsize=10)
+    description = ('RC = rh collapse: RC(h) = SR(h, rh=h) − SR(h, rh=1)\n'
+                   'LH = long-horizon drop: LH = SR(h10, rh1) − SR(h2, rh1)')
+    ax.text(1, -0.1, description, transform=ax.transAxes, ha='right', va='top', fontsize=8, color=MUTED)
     ax.legend(fontsize=7, ncol=4)
     fig.savefig(OUT / 'pn4_anomaly.png', dpi=150)
     plt.close(fig)
@@ -302,6 +316,7 @@ B5_BASELINES = ['cem_w1', 'cem_wH', 'icem_faithful_w1', 'icem_faithful_wH',
 
 
 def main():
+    style()
     OUT.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(0)
     arms = load_arms()
@@ -323,8 +338,8 @@ def main():
         writer.writerows(rows)
 
     indices = {arm: anomaly(arms[arm], rng) for arm in
-               ['native', 'grid_w1', 'grid_wH', 'cem_w1', 'cem_wH', 'icem_faithful_w1', 'icem_faithful_wH',
-                'leflow_cem_w1', 'leflow_cem_wH', 'leflow_icem_w1', 'leflow_icem_wH']}
+               ['native', 'grid_w1', 'grid_wH', 'cem_w1', 'cem_wH', 'leflow_cem_w1', 'leflow_cem_wH',
+                'icem_faithful_w1', 'icem_faithful_wH', 'leflow_icem_w1', 'leflow_icem_wH']}  # grouped by family
 
     index = {name: k for k, name in enumerate(HEADER)}
     lines = ['# P1 LeWAM planner comparison: summary', '', '## P1a reproduction (paper cell)', ''] + reproduction_table()

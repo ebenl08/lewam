@@ -40,6 +40,7 @@ eval:
   plan_cost_window: 1       # goal cost averaged over this many imagined steps up to the scoring step
   save_video: true          # one mp4 per env
   timing: null              # null | single (one env per plan call, batch-1 latency) | batched; writes timing.json
+  timing_detail: null       # null (coarse stages) | planner | model | mot: nested stage timers (lewam/eval/timing.py)
   # gradient planning
   grad_steps: 5
   grad_lr: 0.05

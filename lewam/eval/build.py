@@ -5,6 +5,7 @@ from omegaconf import DictConfig
 
 from lewam.eval.planners import LeWAMPlanner
 from lewam.eval.policy import LeWAMPolicy
+from lewam.eval.timing import SingleEnvLeWAMPlanner
 from lewam.models.lewam import LeWAM
 
 
@@ -35,7 +36,8 @@ def build_policy(
     if eval_cfg.mode == "lewam_policy":
         return LeWAMPolicy(num_exec_actions=eval_cfg.exec_actions, **shared)
     assert eval_cfg.mode == "lewam_plan", f"unknown eval.mode={eval_cfg.mode!r}: expected lewam_policy or lewam_plan"
-    return LeWAMPlanner(
+    planner_class = SingleEnvLeWAMPlanner if eval_cfg.get("timing") == "single" else LeWAMPlanner
+    return planner_class(
         plan_mode=eval_cfg.plan_mode,
         num_proposals=eval_cfg.num_proposals,
         rollout_steps=eval_cfg.rollout_steps,
