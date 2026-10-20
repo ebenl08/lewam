@@ -23,8 +23,10 @@ from latency_sweeps import SWEEPS, call_stats, load
 from plot_style import INK_2, SURFACE, color, style
 
 PROFILE = DATA / 'p2' / 'profile' / 'pusht'
-# LeFlow → CEM was profiled later, with NVTX ranges on (PG timer); the other arms' NVTX profiles are not used here
+# LeFlow → CEM and LeWAM native B = 32 were profiled later, with NVTX ranges on (timer); NVTX profiles give the same
+# kernel, launch and sync counts as the plain ones (checked on native B = 1 and constant B = 32)
 PROFILE_LEFLOW = DATA / 'p2' / 'profile_nvtx' / 'pusht' / 'leflow_cem'
+PROFILE_NATIVE_B32 = DATA / 'p2' / 'profile_nvtx' / 'pusht' / 'native' / 'h5_b32'
 IDLE = '#c3c2b7'  # neutral: GPU waiting on the CPU
 # untimed latency per plan (CUDA-event timer, no profiler; mean of 3 seeds): P2 runs for B = 1, batch sweep for B = 32
 # (batch rerun where it exists: the first B = 32 runs of CEM and LeWAM overlapped another user's job)
@@ -44,7 +46,8 @@ def api_calls(rows, names):
     return sum(int(r['Num Calls']) for r in rows if r['Name'].split('_v')[0] in names)
 
 
-def summarise(run):
+def batch_and_plans(run):
+    """Envs per plan call and every plan made in a profiled run (warmup included)."""
     timing = json.loads((run / 'timing.json').read_text())
     config = json.loads((run / 'config.json').read_text())
     batch = int(config.get('solver', {}).get('batch_size', 0) or 0) or (
@@ -53,6 +56,19 @@ def summarise(run):
         plans = timing['run']['plans']
     else:                # stable-worldmodel: kept plans + the warmup solve (all envs active)
         plans = timing['plans_kept'] + int(config['eval']['num_eval'])
+    return batch, plans
+
+
+def untimed_ms(arm, tag, batch):
+    """Untimed GPU ms per env plan (3 seeds) for a profiled run, or None when no untimed run exists."""
+    sweep = 'batch_rerun' if (SWEEPS / 'batch_rerun' / arm / tag).exists() else 'batch'
+    untimed = load(arm, f"{str(UNTIMED[tag]).format(arm=arm, sweep=sweep)}/*/timing.json", batch=batch)
+    return untimed['ms_per_env'] if untimed else None
+
+
+def summarise(run):
+    timing = json.loads((run / 'timing.json').read_text())
+    batch, plans = batch_and_plans(run)
     kernels = read(run / 'nsys_cuda_gpu_kern_sum.csv')
     api = read(run / 'nsys_cuda_api_sum.csv')
     memcpy = read(run / 'nsys_cuda_gpu_mem_time_sum.csv')
@@ -149,13 +165,13 @@ def main():
     tops = []
     paths = sorted(glob.glob(f'{PROFILE}/*/*/*/nsys_cuda_gpu_kern_sum.csv'))
     paths += sorted(glob.glob(f'{PROFILE_LEFLOW}/*/*/nsys_cuda_gpu_kern_sum.csv'))
+    paths += sorted(glob.glob(f'{PROFILE_NATIVE_B32}/*/nsys_cuda_gpu_kern_sum.csv'))
     for path in paths:
         run = Path(path).parent
         s = summarise(run)
         arm, tag = run.parts[-3], run.parts[-2]
-        sweep = 'batch_rerun' if (SWEEPS / 'batch_rerun' / arm / tag).exists() else 'batch'
-        untimed = load(arm, f"{str(UNTIMED[tag]).format(arm=arm, sweep=sweep)}/*/timing.json", batch=s['batch'])
-        s['untimed_ms'] = untimed['ms_per_env'] if untimed else s['ms_per_plan']
+        untimed = untimed_ms(arm, tag, s['batch'])
+        s['untimed_ms'] = untimed if untimed is not None else s['ms_per_plan']
         runs[(arm, tag)] = s
         name = f"{LABELS.get(arm, arm)} {tag}"
         lines.append(f"| {name} | {s['batch']} | {s['ms_per_plan']:.1f} | {s['kernel_ms_per_plan']:.1f} | "
@@ -165,10 +181,11 @@ def main():
         tops.append(f"- {name}: " + '; '.join(f'{n} ({p:.0f}%)' for n, p in s['top']))
     text = '\n'.join(lines + ['', 'Top kernels by GPU time:'] + tops) + '\n'
     print(text)
-    order = [('cem', 'h5'), ('cem', 'h5_b32'), ('native', 'h5'), ('grid_w1', 'h5'), ('grid_w1', 'h5_b32')]
+    order = [('cem', 'h5'), ('cem', 'h5_b32'), ('native', 'h5'), ('native', 'h5_b32'), ('grid_w1', 'h5'),
+             ('grid_w1', 'h5_b32')]
     plot(runs, order, 'pe8_profile.png')
     order_b = [('cem', 'h5'), ('cem', 'h5_b32'), ('leflow_cem', 'h5'), ('leflow_cem', 'h5_b32'), ('native', 'h5'),
-               ('grid_w1', 'h5'), ('grid_w1', 'h5_b32')]
+               ('native', 'h5_b32'), ('grid_w1', 'h5'), ('grid_w1', 'h5_b32')]
     plot(runs, order_b, 'pe8b_profile_leflow.png')
     if args.out:
         Path(args.out).write_text(text)

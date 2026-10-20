@@ -430,6 +430,7 @@ class LeWAMPlanner(LeWAMPolicy):
             best_plan, best_cost = init_plan.clone(), init_cost.clone()
             plan = init_plan.clone().requires_grad_(True)
             optimizer = torch.optim.Adam([plan], lr=self.grad_lr)
+            
         with torch.enable_grad():
             for iteration in range(self.grad_steps + 1):
                 cost = self._rollout_cost_differentiable(opt_history, opt_pad, opt_goal, opt_steps, plan, state_noise)
