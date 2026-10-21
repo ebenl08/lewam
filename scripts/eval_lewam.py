@@ -40,6 +40,7 @@ ENV_MODULES = {
     "swm/OGBScene-v0": "lewam.envs.scene_env",
     "swm/OGBPuzzle-v0": "lewam.envs.puzzle_env",
     "swm/PointMaze-v0": "lewam.envs.pointmaze_env",
+    "lewam/TwoRoomHard-v1": "lewam.envs.tworoom_hard_env",
 }
 # eval-config callables that set the goal in the env; the others set the episode's start state
 GOAL_METHODS = {"_set_goal_state", "_set_goal_proprio", "set_target_pos", "set_goal_effector", "set_target_qpos",

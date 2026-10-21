@@ -10,11 +10,12 @@
 
 LW=$(cd "$(dirname "$0")/../.." && pwd)
 PG=$(cd "$LW/../stable-worldmodel" && pwd)
-ARMS=${ARMS:?arms: cem leflow_cem grid_w1 native}
+ARMS=${ARMS:?arms: cem cem_adaptive leflow_cem grid_w1 native}
 MODE=${MODE:-time}
 GPU=${GPU:?one nvidia-smi GPU index}
 CORES=${CORES:-256-263}
 BATCHES=${BATCHES:-1 4 16 64 256 1024}
+H=${H:-5}  # PG arms only (cem, cem_adaptive, leflow_cem): plan_config.horizon
 STEPS_LEFT=${STEPS_LEFT:-5 4 3 2 1}
 CAPTURE_ENVS=${CAPTURE_ENVS:-16}
 SEED=${SEED:-10247}
@@ -27,10 +28,10 @@ UUID=$(nvidia-smi --query-gpu=index,uuid --format=csv,noheader | awk -F', ' -v i
 LEWAM_ARGS="--config-name=pusht policy=lewam-pusht eval.dataset_name=pusht_expert_train eval.save_video=false \
 eval.mode=lewam_plan eval.plan_mode=grad eval.grad_all_k=true eval.grad_tr=0.01 eval.exec_actions=5 \
 eval.rollout_steps=5 eval.num_eval=$CAPTURE_ENVS seed=$SEED"
-PG_COMMON="eval.num_eval=$CAPTURE_ENVS eval.eval_budget=50 ++eval.save_episode_video=false plan_config.horizon=5 \
+PG_COMMON="eval.num_eval=$CAPTURE_ENVS eval.eval_budget=50 ++eval.save_episode_video=false plan_config.horizon=$H \
 plan_config.receding_horizon=1 plan_config.action_block=5 solver.batch_size=$CAPTURE_ENVS seed=$SEED"
 CEM_ARGS="--config-name=pusht policy=lewm/weights_epoch_10.pt eval.dataset_name=pusht_expert_train.h5 \
-++eval.manifest_path=null solver=cem solver.num_samples=300 solver.n_steps=10 objective=goal_mse \
+++eval.manifest_path=null solver.num_samples=300 solver.n_steps=10 \
 ++callbacks.timer.enabled=false ++callbacks.solver_progress.enabled=false ++callbacks.observers.rollout=false \
 ++callbacks.observers.trajectory=false ++callbacks.observers.reward_cost=false ++callbacks.observers.embedding_mse=false \
 ++callbacks.observers.pca_features=false ++callbacks.observers.goal_mismatch=false ++decoder.enabled=false $PG_COMMON"
@@ -46,7 +47,10 @@ bench_cmd() {  # arm out_json nsys_flag
   case $arm in
     cem) echo "cd $PG && PYTHONPATH=src PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True /home/eben/.conda/envs/swm/bin/python \
 $LW/scripts/planner_comparison/bench_pg.py --entry src/eval.py --out $out --batches $BATCHES $flag -- $CEM_ARGS \
-+output_folder=$scratch" ;;
+solver=cem objective=goal_mse +output_folder=$scratch" ;;
+    cem_adaptive) echo "cd $PG && PYTHONPATH=src PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True /home/eben/.conda/envs/swm/bin/python \
+$LW/scripts/planner_comparison/bench_pg.py --entry src/eval.py --out $out --batches $BATCHES --steps-left $STEPS_LEFT \
+$flag -- $CEM_ARGS solver=adaptive_cem objective=adaptive_goal_mse horizon_schedule=adaptive +output_folder=$scratch" ;;
     leflow_cem) echo "cd $PG && PYTHONPATH=src PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True /home/eben/.conda/envs/swm/bin/python \
 $LW/scripts/planner_comparison/bench_pg.py --entry src/leflow/eval.py --out $out --batches $BATCHES $flag -- \
 $LEFLOW_ARGS +output_folder=$scratch" ;;

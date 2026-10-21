@@ -7,7 +7,8 @@ call covers all envs), and exits without finishing the eval. Same measurements a
 
 Usage (from playground/stable-worldmodel, PYTHONPATH=src):
   python <LW>/scripts/planner_comparison/bench_pg.py --entry src/eval.py --out <run.json> --batches 1 4 16 \
-      [--nsys] -- --config-name=pusht solver=cem ... eval.num_eval=16 solver.batch_size=16
+      [--nsys] [--steps-left 5 4 3 2 1] -- --config-name=pusht solver=cem ... eval.num_eval=16 solver.batch_size=16
+--steps-left (PG adaptive horizon, solver=adaptive_cem): each batch is replayed once per blocks-left level.
 """
 
 import argparse
@@ -24,6 +25,7 @@ LW = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(LW / 'analysis' / 'planner_comparison'))
 from opcount import count_call, is_oom, measure_ceilings, time_calls  # noqa: E402
 
+from adaptive_horizon import STEPS_KEY  # noqa: E402
 from leflow.latent_planner import LearnedLatentPathSolver  # noqa: E402
 from stable_worldmodel.planning.solver.cem import CEMSolver  # noqa: E402
 
@@ -37,10 +39,12 @@ def tile(value, rows):
     return value
 
 
-def replay(solver, captured, batch):
-    """One solver call over `batch` envs, all in one chunk."""
+def replay(solver, captured, batch, steps_left=None):
+    """One solver call over `batch` envs, all in one chunk; `steps_left` sets the adaptive-horizon clock."""
     rows = np.arange(batch) % captured['n_envs']
     info = {k: tile(v, rows) for k, v in captured['info'].items()}
+    if steps_left is not None:
+        info[STEPS_KEY] = torch.full((batch,), float(steps_left))
     kwargs = {k: tile(v, rows) for k, v in captured['kwargs'].items()}
     init = None if captured['init_action'] is None else tile(captured['init_action'], rows)
 
@@ -54,22 +58,26 @@ def bench(solver, captured, args):
     result = dict(solver=type(solver).__name__, captured_envs=captured['n_envs'], points=[])
     if not args.nsys:
         result['ceilings'] = measure_ceilings()
+    levels = args.steps_left or [None]  # adaptive horizon: one replay per blocks-left level
     for batch in args.batches:
-        point = dict(batch=batch)
-        try:
-            call = replay(solver, captured, batch)
-            point['ms_per_call'] = time_calls(call, label=f'measure B={batch}' if args.nsys else None)
-            if not args.nsys:
-                point.update(count_call(call))
-        except RuntimeError as error:
-            if not is_oom(error):
-                raise
-            point['oom'] = True
-            torch.cuda.empty_cache()
-        result['points'].append(point)
-        print('[bench]', {k: v for k, v in point.items() if k != 'ms_per_call'},
-              f"ms/call {np.mean(point.get('ms_per_call', [np.nan])):.1f}", flush=True)
-        if point.get('oom'):
+        oom = False
+        for steps in levels:
+            point = dict(batch=batch) if steps is None else dict(batch=batch, steps_left=steps)
+            label = f'measure B={batch}' if steps is None else f'measure B={batch} s={steps}'
+            try:
+                call = replay(solver, captured, batch, steps)
+                point['ms_per_call'] = time_calls(call, label=label if args.nsys else None)
+                if not args.nsys:
+                    point.update(count_call(call))
+            except RuntimeError as error:
+                if not is_oom(error):
+                    raise
+                point['oom'] = oom = True
+                torch.cuda.empty_cache()
+            result['points'].append(point)
+            print('[bench]', {k: v for k, v in point.items() if k != 'ms_per_call'},
+                  f"ms/call {np.mean(point.get('ms_per_call', [np.nan])):.1f}", flush=True)
+        if oom:
             break
     return result
 
@@ -81,6 +89,8 @@ def main():
     parser.add_argument('--batches', type=int, nargs='+', default=[1, 4, 16, 64, 256, 1024])
     parser.add_argument('--capture-call', type=int, default=2, help='solver call to capture (2 = warm-started)')
     parser.add_argument('--nsys', action='store_true')
+    parser.add_argument('--steps-left', type=int, nargs='+', default=None,
+                        help='adaptive-horizon CEM: replay once per blocks-left level (PG adaptive_horizon)')
     args, overrides = parser.parse_known_args()
     overrides = [o for o in overrides if o != '--']
     calls = {'n': 0}

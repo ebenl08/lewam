@@ -1,0 +1,21 @@
+# TwoRoom hard, manifest mode: scripts/tworoom_hard/eval_lewam_tworoom_hard.py (not eval_lewam.py).
+# Episodes = the stable-worldmodel cem_vs_icem_seeds25 TwoRoom hard runs for the same seed: per-seed manifest,
+# 30-row stratified subset, budget 50 (exported by scripts/tworoom_hard/export_manifests.py).
+defaults:
+  - base
+  - _self_
+
+policy: lewam-tworoom
+
+world:
+  env_name: lewam/TwoRoomHard-v1
+  max_episode_steps: ${eval.eval_budget}
+
+eval:
+  manifest_dir: ${hydra:runtime.cwd}/data/tworoom_hard/manifests
+  num_eval: 30
+  eval_budget: 50
+  goal_offset_steps: 25     # deadline in env steps (record only; the planner reads h0)
+  h0: 5                     # deadline in model steps = goal_offset_steps / fs
+  dataset_name: tworoom     # not used: start and goal come from the manifest
+  save_video: false
