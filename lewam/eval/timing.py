@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from lewam.eval.beam_tree.beam_planner import LeWAMBeamPlanner
 from lewam.eval.planners import LeWAMPlanner
 
 
@@ -25,6 +26,10 @@ class SingleEnvPlanning:
 
 class SingleEnvLeWAMPlanner(SingleEnvPlanning, LeWAMPlanner):
     """LeWAMPlanner that plans each replanning env on its own."""
+
+
+class SingleEnvLeWAMBeamPlanner(SingleEnvPlanning, LeWAMBeamPlanner):
+    """LeWAMBeamPlanner that plans each replanning env on its own."""
 
 
 # timed stages per detail level: planner methods, model methods, model submodules, and the inline `_stage` hook

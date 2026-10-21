@@ -3,9 +3,10 @@
 import numpy as np
 from omegaconf import DictConfig
 
+from lewam.eval.beam_tree.beam_planner import LeWAMBeamPlanner
 from lewam.eval.planners import LeWAMPlanner
 from lewam.eval.policy import LeWAMPolicy
-from lewam.eval.timing import SingleEnvLeWAMPlanner
+from lewam.eval.timing import SingleEnvLeWAMBeamPlanner, SingleEnvLeWAMPlanner
 from lewam.models.lewam import LeWAM
 
 
@@ -36,7 +37,15 @@ def build_policy(
     if eval_cfg.mode == "lewam_policy":
         return LeWAMPolicy(num_exec_actions=eval_cfg.exec_actions, **shared)
     assert eval_cfg.mode == "lewam_plan", f"unknown eval.mode={eval_cfg.mode!r}: expected lewam_policy or lewam_plan"
-    planner_class = SingleEnvLeWAMPlanner if eval_cfg.get("timing") == "single" else LeWAMPlanner
+    single_env = eval_cfg.get("timing") == "single"
+    beam_args = {}
+    if eval_cfg.plan_mode == "beam":
+        planner_class = SingleEnvLeWAMBeamPlanner if single_env else LeWAMBeamPlanner
+        beam_args = dict(beam_width=eval_cfg.beam_width, beam_children=eval_cfg.beam_children,
+                         beam_score=eval_cfg.beam_score, beam_g_weight=eval_cfg.beam_g_weight,
+                         beam_grad=eval_cfg.beam_grad)
+    else:
+        planner_class = SingleEnvLeWAMPlanner if single_env else LeWAMPlanner
     return planner_class(
         plan_mode=eval_cfg.plan_mode,
         num_proposals=eval_cfg.num_proposals,
@@ -61,4 +70,5 @@ def build_policy(
         cem_elites=eval_cfg.cem_elites,
         cem_std=eval_cfg.cem_std,
         cem_init=eval_cfg.cem_init,
+        **beam_args,
         **shared)

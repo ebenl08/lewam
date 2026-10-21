@@ -31,7 +31,7 @@ eval:
   h0: null                  # goal horizon at the start, in frameskip units; null = from the goal offset
   exec_actions: 0           # actions executed per replan; 0 = frameskip
 
-  plan_mode: grad           # best_of_k | grad | steer | cem
+  plan_mode: grad           # best_of_k | grad | steer | cem | beam
   num_proposals: 32         # number of candidate plans to score per replan
   rollout_steps: 1          # dynamics steps imagined per plan
   plan_random_candidates: false
@@ -59,3 +59,9 @@ eval:
   cem_elites: 6
   cem_std: 0.5
   cem_init: policy
+  # beam search (lewam/eval/beam_tree/beam_planner.py)
+  beam_width: 8             # nodes kept per env at each depth
+  beam_children: 4          # policy samples per kept node; rows per env = beam_width * beam_children
+  beam_score: goal          # goal: goal-MSE at the depth | astar: latent path length + RMS goal distance
+  beam_g_weight: 1.0        # weight on the latent path length (astar)
+  beam_grad: false          # refine the beam's leaves with the gradient planner (grad_* keys)
