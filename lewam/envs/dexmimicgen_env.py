@@ -11,6 +11,11 @@ os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 _visible_gpu = os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")[0] or "0"
 if _visible_gpu.isdigit():
     os.environ.setdefault("MUJOCO_EGL_DEVICE_ID", _visible_gpu)
+# robomimic runs egl_probe (one subprocess per EGL device) for every env unless CUDA_VISIBLE_DEVICES is an
+# integer, e.g. a UUID. With an explicit EGL device the probe is pointless: answer it with that device.
+if os.environ.get("MUJOCO_EGL_DEVICE_ID", "").isdigit():
+    import egl_probe as _egl_probe
+    _egl_probe.get_available_devices = lambda: [int(os.environ["MUJOCO_EGL_DEVICE_ID"])]
 # robosuite imports glfw unconditionally, and pyglfw's import-time lib probe spins forever
 # under a detached run (stdin=/dev/null). Pin the bundled lib so import dlopens it directly.
 if not os.environ.get("PYGLFW_LIBRARY"):

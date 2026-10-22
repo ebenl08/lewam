@@ -43,7 +43,9 @@ def build_policy(
         planner_class = SingleEnvLeWAMBeamPlanner if single_env else LeWAMBeamPlanner
         beam_args = dict(beam_width=eval_cfg.beam_width, beam_children=eval_cfg.beam_children,
                          beam_score=eval_cfg.beam_score, beam_g_weight=eval_cfg.beam_g_weight,
-                         beam_grad=eval_cfg.beam_grad)
+                         beam_grad=eval_cfg.beam_grad, beam_prune=eval_cfg.beam_prune,
+                         beam_tau=eval_cfg.beam_tau, beam_elite=eval_cfg.beam_elite,
+                         beam_soft_seed=eval_cfg.beam_soft_seed, beam_spread_path=eval_cfg.beam_spread_path)
     else:
         planner_class = SingleEnvLeWAMPlanner if single_env else LeWAMPlanner
     return planner_class(

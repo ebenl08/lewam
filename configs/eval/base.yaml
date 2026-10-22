@@ -65,3 +65,8 @@ eval:
   beam_score: goal          # goal: goal-MSE at the depth | astar: latent path length + RMS goal distance
   beam_g_weight: 1.0        # weight on the latent path length (astar)
   beam_grad: false          # refine the beam's leaves with the gradient planner (grad_* keys)
+  beam_prune: topk          # topk: beam_width best, beam_children copies each | soft: resample by softmax(-score / beam_tau)
+  beam_tau: 1.0             # soft only: temperature on the per-env normalised score
+  beam_elite: true          # soft only: the lowest-scoring node always survives once
+  beam_soft_seed: ${seed}   # soft only: seed of the resampling draws (own generator; the flow noise uses `seed`)
+  beam_spread_path: null    # set: append per-depth spread statistics of the beam's nodes to this jsonl file

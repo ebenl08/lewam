@@ -57,9 +57,11 @@ def make_planner(planner_class, num_proposals, **attributes):
     return planner
 
 
-def make_beam_planner(width, children, score="goal", g_weight=1.0, beam_grad=False):
+def make_beam_planner(width, children, score="goal", g_weight=1.0, beam_grad=False, prune="topk", tau=1.0, elite=True):
     return make_planner(LeWAMBeamPlanner, width * children, beam_width=width, beam_children=children,
-                        beam_score=score, beam_g_weight=g_weight, beam_grad=beam_grad)
+                        beam_score=score, beam_g_weight=g_weight, beam_grad=beam_grad,
+                        beam_prune=prune, beam_tau=tau, beam_elite=elite, beam_soft_seed=7, _beam_soft_rng=None,
+                        beam_spread_path=None, _search_count=0)
 
 
 def planning_inputs(n_envs, steps_to_goal):
@@ -134,6 +136,61 @@ def test_topk_parents_keeps_lowest_scores_in_row_order():
     planner = make_beam_planner(width=2, children=3)
     score = torch.tensor([[0.5, 0.1, 0.9, 0.2, 0.7, 0.3]])
     assert torch.equal(planner._topk_parents(score), torch.tensor([[1, 1, 1, 3, 3, 3]]))
+
+
+def test_soft_parents_cold_temperature_copies_the_best():
+    planner = make_beam_planner(width=2, children=3, prune="soft", tau=1e-3)
+    score = torch.tensor([[0.5, 0.1, 0.9, 0.2, 0.7, 0.3]])
+    assert torch.equal(planner._soft_parents(score), torch.full((1, 6), 1))
+
+
+def test_soft_parents_keep_the_elite_and_row_order():
+    planner = make_beam_planner(width=4, children=4, prune="soft", tau=100.0)
+    score = torch.rand(3, 16, generator=torch.Generator().manual_seed(2))
+    parents = planner._soft_parents(score)
+    assert parents.shape == (3, 16)
+    assert torch.equal(parents, parents.sort(1).values)
+    for env in range(3):
+        assert int(score[env].argmin()) in parents[env].tolist()
+    assert len(set(parents[0].tolist())) > 4      # hot temperature: far more distinct parents than top-k's 4
+
+
+def test_soft_resampling_leaves_the_flow_noise_untouched():
+    planner = make_beam_planner(width=4, children=4, prune="soft")
+    flow_state = planner._flow_generator(planner.device).get_state()
+    planner._soft_parents(torch.rand(2, 16))
+    assert torch.equal(planner._flow_generator(planner.device).get_state(), flow_state)
+
+
+def test_pairwise_rms_is_the_mean_distance_over_distinct_pairs():
+    points = torch.tensor([[[0.0, 0.0], [3.0, 4.0], [0.0, 0.0]]])
+    expected = (2 * 5 + 2 * 5 + 2 * 0) / 6 / 2 ** 0.5         # pairs (0,1),(1,0),(1,2),(2,1),(0,2),(2,0)
+    assert torch.allclose(LeWAMBeamPlanner._pairwise_rms(points), torch.tensor([expected]))
+    only_first_pair = torch.zeros(1, 3, 3, dtype=torch.bool)
+    only_first_pair[0, 0, 1] = only_first_pair[0, 1, 0] = True
+    assert torch.allclose(LeWAMBeamPlanner._pairwise_rms(points, only_first_pair), torch.tensor([5 / 2 ** 0.5]))
+
+
+def test_spread_log_rows(tmp_path):
+    import json
+    path = tmp_path / "spread.jsonl"
+    planner = make_beam_planner(width=32, children=1)
+    planner.beam_spread_path = str(path)
+    history, history_pad, z_goal, steps_to_goal = planning_inputs(2, [3.0, 2.0])
+    planner._beam_plan(history, history_pad, z_goal, steps_to_goal)
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    assert len(rows) == 2 * 3                               # 2 envs x 3 depths
+    depth2 = [row for row in rows if row["depth"] == 2]
+    assert all(row["distinct_parents"] == 32 for row in depth2)          # independent chains
+    assert all(row["sibling_action_spread"] is None or row["sibling_action_spread"] != row["sibling_action_spread"]
+               for row in depth2)                                         # no siblings: nan
+    assert [row["frozen"] for row in rows if row["env"] == 1] == [False, False, True]
+
+
+def test_soft_prune_plans_end_to_end():
+    history, history_pad, z_goal, steps_to_goal = planning_inputs(2, [4.0, 2.0])
+    plan = make_beam_planner(width=4, children=4, prune="soft")._beam_plan(history, history_pad, z_goal, steps_to_goal)
+    assert plan.shape == (2, 4 * FRAMESKIP, ACTION_DIM)
 
 
 @pytest.mark.parametrize("score", ["goal", "astar"])
