@@ -70,3 +70,7 @@ eval:
   beam_elite: true          # soft only: the lowest-scoring node always survives once
   beam_soft_seed: ${seed}   # soft only: seed of the resampling draws (own generator; the flow noise uses `seed`)
   beam_spread_path: null    # set: append per-depth spread statistics of the beam's nodes to this jsonl file
+  # goal cost (lewam/trm/planner.py)
+  objective: mse            # mse: latent goal-MSE | trm: TRM head m(z, z_goal) in every plan mode
+  trm_head: null            # trm only: head weights file (config.json next to it)
+  trm_scope: all            # trm only: all = every goal cost | prune = beam pruning only, final pick by goal-MSE

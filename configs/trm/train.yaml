@@ -1,0 +1,49 @@
+# TRM metric head over cached frozen-LeWAM latents (lewam/trm/).
+#
+# No dataloader: the pair table is built once from a latent cache (lewam/trm/cache.py) and held on GPU.
+#
+#   python -m lewam.trm.train -cn train dataset=tworoom.h5 checkpoint=lewam-tworoom output_model_name=trm_tworoom_v1
+
+output_model_name: ???
+out_root: null # null -> LW/data/trm/heads
+seed: 42
+
+# Must match the cache's sidecar exactly -- load_cache refuses a mismatch,
+# because latents mean nothing except relative to the encoder that wrote them.
+dataset: ???    # h5 file name, e.g. tworoom.h5
+checkpoint: ??? # LeWAM run name, e.g. lewam-tworoom
+latent_cache: null # null -> <cache>/latents/<dataset>__<checkpoint>.npz
+
+head:
+  _target_: lewam.trm.head.PairwiseDistanceHead
+  dim: 192 # LeWAM z_dim; must match the cache
+  hidden_dim: 256
+  depth: 2
+  dropout: 0.0
+
+sampler:
+  mode: balanced # balanced | uniform_delta | random_rows
+  n_pairs: 100000 # the pair table IS the budget (li26 holds it fixed)
+  n_val_pairs: 20000
+  n_bins: 10
+  min_delta: 1
+  max_delta: null # 50 reproduces the paper's short-horizon ablation
+  length_weighted: false
+  flip: true # false = directed pairs (the ordering ablation)
+  split_on_goal_reset: false
+  val_frac: 0.1 # whole SEGMENTS, never pairs
+
+label: temporal # temporal (oracle-free, default) | xy (privileged)
+shuffle_labels: false # true = the negative control
+label_scale: null # null -> observed max delta (li26 uses 224)
+huber_beta: 1.0
+spearman_floor: 0.7 # warning only; PG's TwoRoom LeWM head reached 0.801
+
+trainer:
+  max_epochs: 20
+  batch_size: 1024
+  save_epoch_interval: 5
+
+optimizer:
+  lr: 1e-3
+  weight_decay: 1e-4

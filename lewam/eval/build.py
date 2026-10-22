@@ -8,6 +8,7 @@ from lewam.eval.planners import LeWAMPlanner
 from lewam.eval.policy import LeWAMPolicy
 from lewam.eval.timing import SingleEnvLeWAMBeamPlanner, SingleEnvLeWAMPlanner
 from lewam.models.lewam import LeWAM
+from lewam.trm.planner import LeWAMBeamTRMPlanner, LeWAMTRMPlanner
 
 
 def build_policy(
@@ -48,6 +49,12 @@ def build_policy(
                          beam_soft_seed=eval_cfg.beam_soft_seed, beam_spread_path=eval_cfg.beam_spread_path)
     else:
         planner_class = SingleEnvLeWAMPlanner if single_env else LeWAMPlanner
+    trm_args = {}
+    if eval_cfg.get("objective", "mse") == "trm":
+        assert not single_env, "no single-env TRM planner"
+        assert eval_cfg.trm_head, "eval.objective=trm needs eval.trm_head"
+        planner_class = LeWAMBeamTRMPlanner if eval_cfg.plan_mode == "beam" else LeWAMTRMPlanner
+        trm_args = dict(trm_head=eval_cfg.trm_head, trm_scope=eval_cfg.trm_scope)
     return planner_class(
         plan_mode=eval_cfg.plan_mode,
         num_proposals=eval_cfg.num_proposals,
@@ -73,4 +80,5 @@ def build_policy(
         cem_std=eval_cfg.cem_std,
         cem_init=eval_cfg.cem_init,
         **beam_args,
+        **trm_args,
         **shared)

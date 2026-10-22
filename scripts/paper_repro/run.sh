@@ -17,10 +17,11 @@ ARMS=${ARMS:-reactive best_of_k grad}
 SEEDS=${SEEDS:-42 0 1}
 NUM_EVAL=${NUM_EVAL:-50}
 VIDEO_SEED=${VIDEO_SEED:-}  # save one mp4 per episode for this seed only; empty = no videos
+VARIANT=${VARIANT:-}        # empty = paper protocol | reddot_max = PointMaze, reach the red marker from step 0
 CORE_BASE=${CORE_BASE:-256}
 OUT=${OUT:-$LW/data/paper_repro}
 LOGS=${LOGS:-$LW/logs/paper_repro}
-SESSION=${SESSION:-lewam_${TASKS// /_}}
+SESSION=${SESSION:-lewam_${TASKS// /_}${VARIANT:+_$VARIANT}}
 TEST_RUN=${TEST_RUN:-0}
 # nvidia-smi index -> EGL device id (measured 2026-10-22). robosuite (transport) cannot parse a UUID in
 # CUDA_VISIBLE_DEVICES, so it renders on MUJOCO_EGL_DEVICE_ID, whose order differs from nvidia-smi's
@@ -42,6 +43,14 @@ policy() {  # released checkpoint (run name under $STABLEWM_HOME/checkpoints) of
   esac
 }
 
+variant_args() {  # eval script and extra overrides of a variant
+  case $1 in
+    "") echo "scripts/eval_lewam.py" ;;
+    reddot_max) echo "scripts/paper_repro/eval_lewam_reddot.py eval.full_traj=true" ;;
+    *) echo "unknown variant $1" >&2; return 1 ;;
+  esac
+}
+
 jobs() {  # one line per job: task arm seed
   for task in $TASKS; do
     for arm in $ARMS; do
@@ -57,11 +66,13 @@ worker() {  # worker index, GPU index, cores, number of workers
   [[ -n $uuid ]] || { echo "no nvidia-smi GPU '$gpu'" >&2; return 1; }
   while read -r task arm seed; do
     (( i++ % n == k )) || continue
-    local dir=$OUT/$task/$arm/$seed log=$LOGS/${task}_${arm}_${seed}.log save_video=false
+    local label=$task${VARIANT:+_$VARIANT}
+    local dir=$OUT/$label/$arm/$seed log=$LOGS/${label}_${arm}_${seed}.log save_video=false
     [[ $seed == "$VIDEO_SEED" ]] && save_video=true
+    local variant=($(variant_args "$VARIANT"))
     local cmd="cd $LW && STABLEWM_HOME=/home/eben/.stable_worldmodel /home/eben/.conda/envs/lewam/bin/python \
-scripts/eval_lewam.py --config-name $task policy=$(policy "$task") seed=$seed eval.num_eval=$NUM_EVAL \
-eval.save_video=$save_video output_dir=$dir $(arm_args "$arm")"
+${variant[0]} --config-name $task policy=$(policy "$task") seed=$seed eval.num_eval=$NUM_EVAL \
+eval.save_video=$save_video output_dir=$dir $(arm_args "$arm") ${variant[*]:1}"
     if [[ $TEST_RUN == 1 ]]; then echo "[gpu $gpu] $cmd"; continue; fi
     [[ -f $dir/results.txt ]] && { echo "skip $task $arm $seed (done)"; continue; }
     mkdir -p "$dir"
@@ -88,9 +99,9 @@ mkdir -p "$LOGS"
 for k in "${!slots[@]}"; do
   if [[ $TEST_RUN == 1 ]]; then WORKER=$k bash "$0"; continue; fi
   name=gpu${slots[$k]}_w$k
-  log=$LOGS/worker_${TASKS// /_}_$name.log
+  log=$LOGS/worker_${TASKS// /_}${VARIANT:+_$VARIANT}_$name.log
   cmd="WORKER=$k GPUS='$GPUS' PER_GPU=$PER_GPU CORE_BASE=$CORE_BASE TASKS='$TASKS' ARMS='$ARMS' SEEDS='$SEEDS' \
-NUM_EVAL=$NUM_EVAL VIDEO_SEED='$VIDEO_SEED' OUT='$OUT' LOGS='$LOGS' bash $LW/scripts/paper_repro/run.sh > $log 2>&1"
+NUM_EVAL=$NUM_EVAL VIDEO_SEED='$VIDEO_SEED' VARIANT='$VARIANT' OUT='$OUT' LOGS='$LOGS' bash $LW/scripts/paper_repro/run.sh > $log 2>&1"
   if (( k == 0 )); then tmux new-session -d -s "$SESSION" -n "$name" "$cmd"
   else tmux new-window -t "$SESSION" -n "$name" "$cmd"; fi
   echo "worker $k on GPU ${slots[$k]}, cores $(( CORE_BASE + 8 * k ))-$(( CORE_BASE + 8 * k + 7 )): tmux $SESSION:$name, log $log"
