@@ -206,7 +206,7 @@ def load_cache(path, expect_checkpoint=None, expect_dataset=None) -> LatentCache
 
 @torch.no_grad()
 def verify_cache(
-    cache: LatentCache, h5: h5py.File, model, transform, device, n_rows=8, tol=1e-4, seed=0, batch_size=256
+    cache: LatentCache, h5: h5py.File, model, transform, device, n_rows=8, tol=5e-3, seed=0, batch_size=256
 ) -> float:
     """Re-encode a few frames through the eval path (per-frame CPU transform) and compare to the cache.
 

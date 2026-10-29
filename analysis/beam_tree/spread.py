@@ -76,7 +76,7 @@ PRUNE_ARMS = ["chains_b32c1", "topk_goal", "soft_t1_goal", "soft_t3_goal"]
 ASTAR_ROWS = {"top-k": ["chains_b32c1", "topk_goal", "topk_astar_l0p1", "topk_astar_l1"],
               "soft τ=3": ["chains_b32c1", "soft_t3_goal", "soft_t3_astar_l0p1", "soft_t3_astar_l1"]}
 ASTAR_METRICS = ["action_spread", "prefix_spread", "distinct_roots", "goal_min"]
-SUBTITLE = "mean of the per-seed means, error bars ±1 SD over seeds; rows past the deadline left out"
+SUBTITLE = "mean of the per-seed means, error bars ±2 SD over seeds; rows past the deadline left out"
 
 
 def draw(ax, by_depth, arms, metric):
@@ -85,7 +85,7 @@ def draw(ax, by_depth, arms, metric):
         curve = by_depth[by_depth.arm == arm].sort_values("depth")
         colour, line, marker, face = arm_style(arm)
         offset = (index - (len(arms) - 1) / 2) * 0.05             # spread the error bars of one depth apart
-        ax.errorbar(curve.depth + offset, curve[metric], yerr=curve[f"{metric}_sd"], color=colour,
+        ax.errorbar(curve.depth + offset, curve[metric], yerr=2 * curve[f"{metric}_sd"], color=colour,
                     linestyle=line, marker=marker, markerfacecolor=face, markersize=4, linewidth=1.4,
                     elinewidth=0.8, capsize=2, label=arm)
     ax.set_xlabel("depth (blocks)", fontsize=9)

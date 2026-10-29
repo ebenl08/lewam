@@ -107,3 +107,24 @@ def sample_eval_episodes(
     picks = np.sort(valid[rng.choice(len(valid) - 1, size=num_eval, replace=False)])
     rows = dataset.get_row_data(picks)
     return rows[episode_column].tolist(), rows["step_idx"].tolist(), None
+
+
+def sample_goal_anchored_episodes(
+    dataset: LanceDataset | HDF5Dataset, num_eval: int, seed: int, goal_offset_steps: int
+) -> tuple[list[int], list[int], None]:
+    """Draw num_eval episodes; start goal_offset_steps before each one's last frame, so the goal is that frame."""
+    episode_column = episode_col(dataset)
+    episode_ids = np.unique(dataset.get_col_data(episode_column))
+    row_steps = np.asarray(dataset.get_col_data("step_idx")).reshape(-1)
+    row_episodes = np.asarray(dataset.get_col_data(episode_column)).reshape(-1)
+    lengths = np.array([np.max(row_steps[row_episodes == episode]) + 1 for episode in episode_ids])
+
+    eligible = episode_ids[lengths > goal_offset_steps]
+    if len(eligible) < num_eval:
+        raise ValueError(f"{len(eligible)} episodes longer than {goal_offset_steps} steps, {num_eval} requested")
+    rng = np.random.default_rng(seed)
+    episodes = np.sort(rng.choice(eligible, size=num_eval, replace=False))
+
+    length_of = dict(zip(episode_ids, lengths))
+    starts = [int(length_of[episode]) - 1 - goal_offset_steps for episode in episodes]
+    return episodes.tolist(), starts, None

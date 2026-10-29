@@ -81,4 +81,5 @@ def build_policy(
         cem_init=eval_cfg.cem_init,
         **beam_args,
         **trm_args,
-        **shared)
+        **shared
+    )

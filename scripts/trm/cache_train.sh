@@ -2,13 +2,18 @@
 #
 # TRM head for one env on LeWAM latents: latent cache (verified), real head, shuffled-label control, imagined-latent
 # probe. One UUID-pinned GPU. Run from playground/lewam inside tmux:
-#   GPU=5 CORES=272-279 bash scripts/trm/cache_train.sh tworoom
-# Caches: ~/.stable_worldmodel/latents/<dataset>__<checkpoint>.npz; heads: data/trm/heads/trm_<env>_v1{,_shuff}/;
-# probe: data/trm/probe/trm_<env>_v1/; logs: logs/trm/<env>/{cache,train,train_shuff,probe}.log
+#   GPU=5 CORES=272-279 [MAX_DELTA=50] bash scripts/trm/cache_train.sh tworoom [--build-cache]
+# The latent cache is built only with --build-cache; otherwise the existing cache is reused.
+# MAX_DELTA caps the pair gap (sampler.max_delta) and tags every run and log with _d<MAX_DELTA>.
+# Caches: ~/.stable_worldmodel/latents/<dataset>__<checkpoint>.npz; heads: data/trm/heads/trm_<env>_v1[_d50]{,_shuff}/;
+# probe: data/trm/probe/trm_<env>_v1[_d50]/; logs: logs/trm/<env>/{cache,train,train_shuff,probe}[_d50].log
 
 LW=$(cd "$(dirname "$0")/../.." && pwd)
 PYTHON=/home/eben/.conda/envs/lewam/bin/python
 ENV_NAME=${1:?env: tworoom | puzzle | pointmaze}
+BUILD_CACHE=false
+[[ ${2:-} == --build-cache ]] && BUILD_CACHE=true
+[[ -n ${2:-} && $BUILD_CACHE == false ]] && { echo "unknown option '$2'" >&2; exit 1; }
 GPU=${GPU:?nvidia-smi GPU index}
 CORES=${CORES:?cores, e.g. 272-279}
 [[ $GPU == 2 || $GPU == 8 ]] && { echo "nvidia-smi GPU $GPU is off limits" >&2; exit 1; }
@@ -21,7 +26,9 @@ case $ENV_NAME in
   pointmaze) DATASET=pointmaze_large.h5; CKPT=lewam-pointmaze-large; SUBSET="" ;;
   *) echo "unknown env $ENV_NAME" >&2; exit 1 ;;
 esac
-RUN=trm_${ENV_NAME}_v1
+TAG="" DELTA_ARGS=""
+[[ -n ${MAX_DELTA:-} ]] && { TAG=_d$MAX_DELTA; DELTA_ARGS="sampler.max_delta=$MAX_DELTA"; }
+RUN=trm_${ENV_NAME}_v1$TAG
 LOGS=$LW/logs/trm/$ENV_NAME
 mkdir -p "$LOGS"
 cd "$LW" || exit 1
@@ -34,15 +41,21 @@ run() {  # log name, then the python args
     "$PYTHON" "$@" > "$log" 2>&1 || { echo "FAILED, see $log"; exit 1; }
 }
 
-run cache -m lewam.trm.cache --dataset "$DATASET" --checkpoint "$CKPT" $SUBSET --verify
-grep -h "fidelity\|written" "$LOGS/cache.log" | cut -c1-160
+if $BUILD_CACHE; then
+  run cache -m lewam.trm.cache --dataset "$DATASET" --checkpoint "$CKPT" $SUBSET --verify
+  grep -h "fidelity\|written" "$LOGS/cache.log" | cut -c1-160
+else
+  CACHE=${STABLEWM_HOME:-$HOME/.stable_worldmodel}/latents/${DATASET}__$CKPT.npz
+  [[ -f $CACHE ]] || { echo "no latent cache $CACHE; pass --build-cache" >&2; exit 1; }
+  echo "===== $(date +%T) $ENV_NAME reusing $CACHE"
+fi
 for variant in "" "_shuff"; do
   shuffle=false; [[ $variant == _shuff ]] && shuffle=true
-  run "train$variant" -m lewam.trm.train dataset="$DATASET" checkpoint="$CKPT" output_model_name="$RUN$variant" \
-    shuffle_labels=$shuffle hydra.run.dir="$LW/outputs/trm/$RUN$variant"
-  grep -h "final:" "$LOGS/train$variant.log" | sed 's/.*final: //' | cut -c1-160
+  run "train$variant$TAG" -m lewam.trm.train dataset="$DATASET" checkpoint="$CKPT" output_model_name="$RUN$variant" \
+    shuffle_labels=$shuffle $DELTA_ARGS hydra.run.dir="$LW/outputs/trm/$RUN$variant"
+  grep -h "final:" "$LOGS/train$variant$TAG.log" | sed 's/.*final: //' | cut -c1-160
 done
-run probe -m lewam.trm.probe_imagined --dataset "$DATASET" --checkpoint "$CKPT" \
+run "probe$TAG" -m lewam.trm.probe_imagined --dataset "$DATASET" --checkpoint "$CKPT" \
   --head "$LW/data/trm/heads/$RUN/weights_epoch_20.pt"
-grep -h "rho_" "$LOGS/probe.log" | sed 's/.*| //'
+grep -h "rho_" "$LOGS/probe$TAG.log" | sed 's/.*| //'
 echo "===== $(date +%T) $ENV_NAME done"

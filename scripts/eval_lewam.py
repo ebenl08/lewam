@@ -27,7 +27,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from lewam import views
 from lewam.eval.build import build_policy
-from lewam.eval.episodes import get_dataset, img_transform, sample_eval_episodes
+from lewam.eval.episodes import get_dataset, img_transform, sample_eval_episodes, sample_goal_anchored_episodes
 from lewam.eval.loaders import load_lewam
 from lewam.eval.timing import ReplanTimer
 
@@ -41,6 +41,12 @@ ENV_MODULES = {
     "swm/OGBPuzzle-v0": "lewam.envs.puzzle_env",
     "swm/PointMaze-v0": "lewam.envs.pointmaze_env",
     "lewam/TwoRoomHard-v1": "lewam.envs.tworoom_hard_env",
+    "anygoal/AvoidT-v1": "lewam.envs.anygoal_env",
+    "anygoal/StackT-v2": "lewam.envs.anygoal_env",
+    "anygoal/PushTAntigoal-v3": "lewam.envs.anygoal_env",
+    "anygoal/TwoRoom-Route-v1": "lewam.envs.anygoal_env",
+    "anygoal/CubeHop-v0": "lewam.envs.anygoal_env",
+    "anygoal/CubeDiagonal-v0": "lewam.envs.anygoal_env",
 }
 # eval-config callables that set the goal in the env; the others set the episode's start state
 GOAL_METHODS = {"_set_goal_state", "_set_goal_proprio", "set_target_pos", "set_goal_effector", "set_target_qpos",
@@ -63,6 +69,29 @@ class BudgetTruncate(gymnasium.Wrapper):
         if self.budget is not None and self.t >= self.budget:
             truncated = True
         return obs, reward, terminated, truncated, info
+
+
+class StateLog(gymnasium.Wrapper):
+    """Record the unwrapped env state after every step."""
+
+    def reset(self, **kwargs):
+        self.states = []
+        return self.env.reset(**kwargs)
+
+    def step(self, action):
+        out = self.env.step(action)
+        self.states.append(np.asarray(self.env.unwrapped._get_obs(), dtype=np.float32))
+        return out
+
+
+def save_states(world: swm.World, path: Path) -> None:
+    """states.npz: one (steps, state_dim) array per env, keyed env_<i>."""
+    states = {}
+    for i, env in enumerate(world.envs.envs):
+        while not isinstance(env, StateLog):
+            env = env.env
+        states[f"env_{i}"] = np.stack(env.states)
+    np.savez(path, **states)
 
 
 def register_env(env_name: str) -> None:
@@ -101,10 +130,16 @@ def main(cfg: DictConfig):
     eval_cfg = cfg.eval
 
     dataset = get_dataset(eval_cfg.dataset_name, list(cfg.dataset.keys_to_cache), cfg.cache_dir)
-    episodes, starts, goal_offsets = sample_eval_episodes(
-        dataset, eval_cfg.num_eval, cfg.seed, eval_cfg.goal_offset_steps, full_traj=eval_cfg.full_traj,
-        random_start=eval_cfg.random_start, min_episode_len=eval_cfg.min_episode_len
-    )
+    if eval_cfg.goal_anchored:
+        assert not eval_cfg.full_traj, "goal_anchored and full_traj both choose the start"
+        episodes, starts, goal_offsets = sample_goal_anchored_episodes(
+            dataset, eval_cfg.num_eval, cfg.seed, eval_cfg.goal_offset_steps
+        )
+    else:
+        episodes, starts, goal_offsets = sample_eval_episodes(
+            dataset, eval_cfg.num_eval, cfg.seed, eval_cfg.goal_offset_steps, full_traj=eval_cfg.full_traj,
+            random_start=eval_cfg.random_start, min_episode_len=eval_cfg.min_episode_len
+        )
     if eval_cfg.full_traj:
         eval_cfg.eval_budget = 2 * int(max(goal_offsets))
         print(f"[full-traj] {len(goal_offsets)} episodes, offsets {min(goal_offsets)}..{max(goal_offsets)}, "
@@ -120,8 +155,11 @@ def main(cfg: DictConfig):
 
     extra_views = views.extra_cameras(views.columns(model_cfg.get("views")))
 
+    wrappers = [BudgetTruncate] if eval_cfg.full_traj else []
+    if eval_cfg.log_states:
+        wrappers.append(StateLog)
     world = swm.World(
-        **cfg.world, image_shape=(224, 224), extra_wrappers=[BudgetTruncate] if eval_cfg.full_traj else None,
+        **cfg.world, image_shape=(224, 224), extra_wrappers=wrappers or None,
         **({"extra_views": extra_views} if extra_views else {})
     )
     if eval_cfg.full_traj:
@@ -155,6 +193,8 @@ def main(cfg: DictConfig):
         video=results_path if eval_cfg.save_video else None,
     )
     wall_s = time.time() - start_time
+    if eval_cfg.log_states:
+        save_states(world, results_path / "states.npz")
     print(f"==== {eval_cfg.mode} RESULTS ====")
     print(metrics)
     if timer is not None:

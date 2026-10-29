@@ -41,6 +41,8 @@ def probe_pairs(cache, val_seg, k, n_pairs, rng, frameskip, history_stride, samp
     lengths, offsets = lengths[val_seg], offsets[val_seg]
     i, j, delta = sample_pairs(lengths, offsets, 4 * n_pairs, rng, mode=sampler_cfg.mode, n_bins=sampler_cfg.n_bins,
                                min_delta=sampler_cfg.min_delta, max_delta=sampler_cfg.max_delta, flip=False)
+    order = rng.permutation(len(i))                       # balanced pairs come grouped by bucket, smallest delta first
+    i, j, delta = i[order], j[order], delta[order]
     t = i - k * frameskip
     episode_start = offsets[np.searchsorted(offsets, i, side="right") - 1]
     keep = t - history_stride >= episode_start            # whole history inside the episode, no padding

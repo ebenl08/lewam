@@ -27,7 +27,11 @@ TEST_RUN=${TEST_RUN:-0}
 # CUDA_VISIBLE_DEVICES, so it renders on MUJOCO_EGL_DEVICE_ID, whose order differs from nvidia-smi's
 EGL_ID=(3 4 0 1 2 8 9 5 6 7)
 
-arm_args() {
+arm_args() {  # an arm may carry a deadline suffix, e.g. grad_d200 (pointmaze_harness)
+  if [[ $1 =~ ^(.+)_d([0-9]+)$ ]]; then
+    echo "$(arm_args "${BASH_REMATCH[1]}") eval.goal_offset_steps=${BASH_REMATCH[2]}"
+    return
+  fi
   case $1 in
     reactive) echo "eval.mode=lewam_policy" ;;
     best_of_k) echo "eval.mode=lewam_plan eval.plan_mode=best_of_k" ;;
@@ -38,14 +42,15 @@ arm_args() {
 
 policy() {  # released checkpoint (run name under $STABLEWM_HOME/checkpoints) of a task
   case $1 in
-    pointmaze) echo "lewam-pointmaze-large" ;;
+    pointmaze | pointmaze_harness) echo "lewam-pointmaze-large" ;;
     *) echo "lewam-$1" ;;
   esac
 }
 
-variant_args() {  # eval script and extra overrides of a variant
-  case $1 in
-    "") echo "scripts/eval_lewam.py" ;;
+variant_args() {  # eval script and extra overrides of a variant (task, variant)
+  case $2 in
+    "") [[ $1 == pointmaze_harness ]] && echo "scripts/paper_repro/eval_lewam_pointmaze_harness.py" \
+          || echo "scripts/eval_lewam.py" ;;
     reddot_max) echo "scripts/paper_repro/eval_lewam_reddot.py eval.full_traj=true" ;;
     *) echo "unknown variant $1" >&2; return 1 ;;
   esac
@@ -69,7 +74,7 @@ worker() {  # worker index, GPU index, cores, number of workers
     local label=$task${VARIANT:+_$VARIANT}
     local dir=$OUT/$label/$arm/$seed log=$LOGS/${label}_${arm}_${seed}.log save_video=false
     [[ $seed == "$VIDEO_SEED" ]] && save_video=true
-    local variant=($(variant_args "$VARIANT"))
+    local variant=($(variant_args "$task" "$VARIANT"))
     local cmd="cd $LW && STABLEWM_HOME=/home/eben/.stable_worldmodel /home/eben/.conda/envs/lewam/bin/python \
 ${variant[0]} --config-name $task policy=$(policy "$task") seed=$seed eval.num_eval=$NUM_EVAL \
 eval.save_video=$save_video output_dir=$dir $(arm_args "$arm") ${variant[*]:1}"

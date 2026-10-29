@@ -12,7 +12,8 @@ label_scale is the hyperparameter of distance_scale mentioned in the paper.
 
 Ported from `playground/stable-worldmodel/src/trm/train.py`. What changed:
 checkpoints go to `<out_root>/<output_model_name>/` via `lewam.trm.checkpoint`
-instead of `save_pretrained`; metrics go to `metrics.json` instead of wandb;
+instead of `save_pretrained`; metrics go to `metrics.json` and, when
+`wandb.enabled`, to wandb directly (per-step train loss and lr, per-epoch val);
 the Spearman warning threshold is `spearman_floor` instead of a hardcoded 0.9.
 """
 
@@ -26,6 +27,7 @@ import torch.nn.functional as F
 from loguru import logger as logging
 from omegaconf import DictConfig, OmegaConf
 from scipy.stats import rankdata, spearmanr
+import wandb
 
 from lewam.trm.cache import default_cache_path, load_cache
 from lewam.trm.checkpoint import save_head
@@ -124,6 +126,15 @@ def run(cfg: DictConfig) -> None:
     run_dir = Path(cfg.out_root or LW_ROOT / 'data' / 'trm' / 'heads') / cfg.output_model_name
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / 'config.yaml').write_text(OmegaConf.to_yaml(cfg, resolve=True))
+    if cfg.wandb.enabled:
+        wandb.init(
+            entity=cfg.wandb.entity,
+            project=cfg.wandb.project,
+            group=cfg.wandb.group or Path(cfg.dataset).stem,
+            name=cfg.output_model_name,
+            dir=str(run_dir),
+            config=OmegaConf.to_container(cfg, resolve=True),
+        )
 
     # --- CACHE -------------------------------------------------------------
     path = cfg.latent_cache or default_cache_path(cfg.dataset, cfg.checkpoint, cfg.get('cache_dir'))
@@ -142,7 +153,16 @@ def run(cfg: DictConfig) -> None:
         split_on_goal_reset=cfg.sampler.split_on_goal_reset,
     )
     train_seg, val_seg = split_segments(len(lengths), cfg.sampler.val_frac, rng)
-    logging.info(f'{len(lengths)} segments -> {len(train_seg)} train / {len(val_seg)} val')
+    # test split for sweeps: carved out of train with its own rng, so the val split and the
+    # main rng stream are unchanged; test_frac=0 reproduces the runs without it
+    test_seg = np.array([], dtype=np.int64)
+    if cfg.sampler.test_frac > 0:
+        test_rng = np.random.default_rng(cfg.seed + 1)
+        test_frac_of_train = cfg.sampler.test_frac / (1 - cfg.sampler.val_frac)
+        keep, held = split_segments(len(train_seg), test_frac_of_train, test_rng)
+        train_seg, test_seg = train_seg[keep], train_seg[held]
+        np.save(run_dir / 'test_segments.npy', test_seg)
+    logging.info(f'{len(lengths)} segments -> {len(train_seg)} train / {len(val_seg)} val / {len(test_seg)} test')
     np.save(run_dir / 'val_segments.npy', val_seg)
 
     i_tr, j_tr, y_tr = draw_pairs(
@@ -167,6 +187,16 @@ def run(cfg: DictConfig) -> None:
         flip=False,
     )
     label_stats('val', y_va)
+    if len(test_seg):
+        i_te, j_te, y_te = draw_pairs(
+            cache=cache,
+            segments=(lengths[test_seg], offsets[test_seg]),
+            cfg=cfg,
+            n_pairs=cfg.sampler.n_val_pairs,
+            rng=test_rng,
+            flip=False,
+        )
+        label_stats('test', y_te)
 
     if cfg.shuffle_labels:
         logging.warning('NEGATIVE CONTROL: training labels are permuted')
@@ -213,6 +243,8 @@ def run(cfg: DictConfig) -> None:
             opt.step()
             sched.step()
             running += loss.item()
+            if cfg.wandb.enabled:
+                wandb.log({'train/loss_step': loss.item(), 'train/lr': sched.get_last_lr()[0]})
 
         metrics = evaluate(head, z_i_va, z_j_va, y_v, label_scale, cfg.huber_beta)
         metrics['train/loss'] = running / max(len(batches), 1)
@@ -220,6 +252,8 @@ def run(cfg: DictConfig) -> None:
             f'epoch {epoch + 1}: ' + '  '.join(f'{k}={v:.4f}' for k, v in metrics.items())
         )
         history.append(dict(epoch=epoch + 1, **metrics))
+        if cfg.wandb.enabled:
+            wandb.log(dict(epoch=epoch + 1, **metrics))
 
         if (epoch + 1) % cfg.trainer.save_epoch_interval == 0 or epoch + 1 == cfg.trainer.max_epochs:
             # config=cfg.head ONLY: load_head builds the head from it
@@ -233,6 +267,17 @@ def run(cfg: DictConfig) -> None:
                 json.dumps({'label_scale': label_scale, 'label': cfg.label}, indent=2)
             )
 
+    if len(test_seg):
+        z_i_te, z_j_te, y_te_t = pairs_to_device(cache.emb, i_te, j_te, y_te, device)
+        test_metrics = {
+            key.replace('val/', 'test/'): value
+            for key, value in evaluate(head, z_i_te, z_j_te, y_te_t, label_scale, cfg.huber_beta).items()
+        }
+        logging.info('test: ' + '  '.join(f'{k}={v:.4f}' for k, v in test_metrics.items()))
+        history[-1].update(test_metrics)
+        if cfg.wandb.enabled:
+            wandb.summary.update(test_metrics)
+
     (run_dir / 'metrics.json').write_text(json.dumps(history, indent=2))
     logging.info(f'done ({run_dir}). final: ' + '  '.join(f'{k}={v:.4f}' for k, v in metrics.items()))
     if metrics.get('val/spearman', 0.0) < cfg.spearman_floor:
@@ -240,6 +285,8 @@ def run(cfg: DictConfig) -> None:
             f"held-out Spearman {metrics.get('val/spearman', 0.0):.3f} < {cfg.spearman_floor} "
             '(expected near 0 only when shuffle_labels=true, which is the control working correctly)'
         )
+    if cfg.wandb.enabled:
+        wandb.finish()
 
 
 if __name__ == '__main__':
