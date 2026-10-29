@@ -1,0 +1,21 @@
+# PointMaze Large, env harness: scripts/paper_repro/eval_lewam_pointmaze_harness.py (not eval_lewam.py).
+# 50 random start/goal pairs per seed, each with a shortest route of at least min_route_cells maze cells; start and
+# goal get OGBench's reset noise (uniform +-1 unit). The goal horizon is a configured deadline (h0), counted down.
+defaults:
+  - pointmaze
+  - _self_
+
+policy: lewam-pointmaze-large
+
+world:
+  env_name: lewam/PointMazeHarness-v0
+  max_episode_steps: ${eval.eval_budget}
+
+eval:
+  num_eval: 50
+  eval_budget: 1000         # OGBench's episode length for PointMaze Large
+  goal_offset_steps: 50     # deadline in env steps
+  h0: null                  # deadline in model steps; null = goal_offset_steps / fs
+  rollout_steps: 10         # look-ahead cap per replan = H_max (scored at min(blocks left, 10))
+  min_route_cells: 8        # shortest start-goal route, in 4x4 maze cells (~160 env steps)
+  callables: []             # start and goal come from reset options, not the dataset

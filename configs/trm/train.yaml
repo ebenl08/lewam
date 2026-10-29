@@ -32,6 +32,7 @@ sampler:
   flip: true # false = directed pairs (the ordering ablation)
   split_on_goal_reset: false
   val_frac: 0.1 # whole SEGMENTS, never pairs
+  test_frac: 0.0 # > 0 for sweeps: select on val, report on test (carved out of train)
 
 label: temporal # temporal (oracle-free, default) | xy (privileged)
 shuffle_labels: false # true = the negative control
@@ -47,3 +48,9 @@ trainer:
 optimizer:
   lr: 1e-3
   weight_decay: 1e-4
+
+wandb:
+  enabled: true
+  entity: ebenl_08
+  project: lewam-trm
+  group: null # null -> dataset name

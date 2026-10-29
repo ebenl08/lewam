@@ -1,0 +1,33 @@
+# AnyGoal CubeDiagonal (external/AnyGoal, anygoal/resources/plan/lewm/cube_diagonal.yaml): OGBench single cube,
+# episodes grasp opposite vertical cube edges. World / callables as AnyGoal's LeWM config.
+defaults:
+  - base
+  - _self_
+
+world:
+  env_name: anygoal/CubeDiagonal-v0
+  env_type: single
+  ob_type: states
+  multiview: false
+  width: 224
+  height: 224
+  visualize_info: false
+  terminate_at_goal: true
+  evaluation_ee_position_tolerance: 0.04
+  evaluation_ee_yaw_tolerance: 0.10
+  evaluation_cube_position_tolerance: 0.04
+
+eval:
+  goal_offset_steps: 25
+  eval_budget: 50
+  dataset_name: cube_diagonal_test
+  callables:
+    - method: set_state
+      args:
+        qpos: {value: qpos}
+        qvel: {value: qvel}
+    - method: set_evaluation_goal
+      args:
+        effector_pos: {value: goal_proprio_effector_pos}
+        effector_yaw: {value: goal_proprio_effector_yaw}
+        cube_pos: {value: goal_privileged_block_0_pos}

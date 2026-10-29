@@ -1,0 +1,23 @@
+# AnyGoal TwoRoom-Route (external/AnyGoal, anygoal/resources/plan/lewm/tworoom_route.yaml): TwoRoom dynamics with an
+# invisible target, route-policy episodes. Offset / budget / callables as AnyGoal's LeWM config.
+defaults:
+  - base
+  - _self_
+
+world:
+  env_name: anygoal/TwoRoom-Route-v1
+
+dataset:
+  keys_to_cache: [action, proprio]
+
+eval:
+  goal_offset_steps: 25
+  eval_budget: 50
+  dataset_name: tworoom_route_test
+  callables:
+    - method: _set_state
+      args:
+        state: {value: proprio}
+    - method: _set_goal_state
+      args:
+        goal_state: {value: goal_proprio}

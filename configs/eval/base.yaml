@@ -26,6 +26,7 @@ eval:
   task_only: false          # true: no goal in the env: success is completion of the task
   random_start: true        # false: start at frame 0 of the drawn episodes
   min_episode_len: 0        # draw only from episodes at least this long; 0 = no filter
+  goal_anchored: false      # true: goal = each episode's last frame, start goal_offset_steps before it
 
   mode: lewam_policy        # lewam_policy | lewam_plan
   h0: null                  # goal horizon at the start, in frameskip units; null = from the goal offset
@@ -39,6 +40,7 @@ eval:
   horizon_schedule: adaptive  # adaptive: count down to the dataset goal time | constant: goal rollout_steps ahead every replan
   plan_cost_window: 1       # goal cost averaged over this many imagined steps up to the scoring step
   save_video: true          # one mp4 per env
+  log_states: false         # true: write states.npz, the env state after every step (one array per env)
   timing: null              # null | single (one env per plan call, batch-1 latency) | batched; writes timing.json
   timing_detail: null       # null (coarse stages) | planner | model | mot: nested stage timers (lewam/eval/timing.py)
   # gradient planning
@@ -69,8 +71,7 @@ eval:
   beam_tau: 1.0             # soft only: temperature on the per-env normalised score
   beam_elite: true          # soft only: the lowest-scoring node always survives once
   beam_soft_seed: ${seed}   # soft only: seed of the resampling draws (own generator; the flow noise uses `seed`)
-  beam_spread_path: null    # set: append per-depth spread statistics of the beam's nodes to this jsonl file
-  # goal cost (lewam/trm/planner.py)
+  beam_spread_path: null    # set: append per-depth spread statistics of the beam's nodes to this jsonl file  # goal cost (lewam/trm/planner.py)
   objective: mse            # mse: latent goal-MSE | trm: TRM head m(z, z_goal) in every plan mode
   trm_head: null            # trm only: head weights file (config.json next to it)
   trm_scope: all            # trm only: all = every goal cost | prune = beam pruning only, final pick by goal-MSE
