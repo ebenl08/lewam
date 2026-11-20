@@ -17,6 +17,7 @@ FAMILY_COLORS = {
     'native': '#1f5bb5', 'grid_wH': '#2a78d6', 'grid_w1': '#6ea8ee',     # LeWAM: blue, dark = as published
     'cem_300x30': '#eb6834', 'cem': '#eb6834', 'leflow_cem': '#a8400f',  # CEM family: orange (300x30 has its own plot)
     'icem_faithful': '#1baf7a', 'leflow_icem': '#0b6b47',                # iCEM family: green
+    'beam_topk_goal': '#5b2d9e', 'beam_soft_t3_goal': '#8a5cd0', 'beam_chains_b32c1': '#b99be8',  # beam: purple
 }
 
 

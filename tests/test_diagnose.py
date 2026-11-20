@@ -40,6 +40,26 @@ def run_propose(planner, steps_left, env_steps):
     return planner._propose({}, list(range(len(steps_left))), history, history_pad), history, z_goal
 
 
+class FakeEnv:
+    def __init__(self, num_envs):
+        self.num_envs = num_envs
+
+
+def attach_stream(planner, n_envs):
+    """Give a stub planner what _record_real needs: an env, one pixel view, a flattening encoder."""
+    planner.env = FakeEnv(n_envs)
+    planner._action_buffer = [[] for _ in range(n_envs)]
+    planner.view_keys = ["pixels"]
+    planner.transform, planner.process = {}, {}
+    planner._enc = lambda pixels: pixels.flatten(1)
+    return planner
+
+
+def frames(latents):
+    """Pixels the flattening encoder maps back to the given (N, Z_DIM) latents."""
+    return {"pixels": latents.view(len(latents), Z_DIM, 1, 1)}
+
+
 def deadline_cost(planner, z_goal):
     """Cost of each recorded plan at its deadline step, from the trace."""
     rows = planner.trace_imag
@@ -59,10 +79,11 @@ def test_traced_best_of_k_plans_the_same_and_records_its_cheapest_cost():
     planner = traced(make_planner(LeWAMPlanner, 16, **planner_kwargs))
     actions, history, z_goal = run_propose(planner, [4.0, 2.0, 3.0], [0, 5, 10])
     assert torch.equal(actions, expected)
-
-    assert [(row[0], row[1]) for row in planner.trace_real] == [(0, 0), (1, 5), (2, 10)]
-    assert torch.equal(torch.stack([row[2] for row in planner.trace_real]), history[:, -1])
     assert [row[3].shape for row in planner.trace_imag] == [(4, Z_DIM)] * 3
+    sanity = [row for row in planner.drift_rows if row["k"] == 0]   # ẑ_0 is the encoded current frame
+    assert len(sanity) == 3 and all(row["cost_pred"] == row["cost_real"] and row["drift_mse"] == 0 for row in sanity)
+    assert sorted(planner._pending) == [(0, 5), (0, 10), (0, 15), (0, 20), (1, 10), (1, 15), (1, 20), (1, 25),
+                                        (2, 15), (2, 20), (2, 25), (2, 30)]
 
     # the recorded plan is the cheapest of the 16 proposals under the same flow draws
     fresh = make_planner(LeWAMPlanner, 16, **planner_kwargs)
@@ -95,14 +116,38 @@ def test_beam_grad_records_only_the_outer_call():
     assert len(planner.trace_imag) == 2 and planner._plan_depth == 0
 
 
-def test_save_trace_writes_one_row_per_imagined_step(tmp_path):
-    planner = traced(make_planner(LeWAMPlanner, 8, plan_mode="best_of_k"))
-    run_propose(planner, [4.0, 2.0], [0, 5])
+def test_real_latents_fill_the_queued_imagined_rows_once_per_step():
+    planner = attach_stream(traced(make_planner(LeWAMPlanner, 8, plan_mode="best_of_k")), 2)
+    _, _, z_goal = run_propose(planner, [4.0, 2.0], [0, 0])
+    plan_latents = {(row["env"], row["t"]): z for items in planner._pending.values() for row, z in items}
+    generator = torch.Generator().manual_seed(3)
+    real = torch.randn(2, Z_DIM, generator=generator)
+    planner._step = np.array([5, 5])
+    planner._record_real({**frames(real), "terminated": np.array([False, True])})
+    planner._record_real({**frames(real + 1), "terminated": np.array([False, True])})   # same step: no new rows
+    assert [(row[0], row[1], row[3]) for row in planner.trace_real] == [(0, 5, True), (1, 5, False)]
+    filled = [row for row in planner.drift_rows if row["k"] == 1]
+    assert [(row["env"], row["t"], row["alive"]) for row in filled] == [(0, 5, True), (1, 5, False)]
+    for row in filled:
+        z_pred, z_real = plan_latents[(row["env"], 5)], real[row["env"]]
+        assert row["drift_mse"] == pytest.approx(float((z_pred - z_real).pow(2).sum()), rel=1e-5)
+        assert row["cost_real"] == pytest.approx(float(((z_real - z_goal[row["env"]]) ** 2).mean()), rel=1e-5)
+
+
+def test_save_trace_writes_imagined_rows_and_the_drift_csv(tmp_path):
+    import pandas as pd
+    planner = attach_stream(traced(make_planner(LeWAMPlanner, 8, plan_mode="best_of_k")), 2)
+    run_propose(planner, [4.0, 2.0], [0, 0])
+    planner._step = np.array([5, 5])
+    planner._record_real({**frames(torch.zeros(2, Z_DIM)), "terminated": np.array([False, False])})
     planner.save_trace(tmp_path / "trace.npz")
     trace = np.load(tmp_path / "trace.npz")
     assert trace["imag_z"].shape == (2 * 4, Z_DIM)
     assert trace["imag_k"].tolist() == [0, 1, 2, 3] * 2
-    assert trace["real_step"].tolist() == [0, 5] and trace["goal_env"].tolist() == [0, 1]
+    assert trace["real_step"].tolist() == [5, 5] and trace["goal_env"].tolist() == [0, 1]
+    drift = pd.read_csv(tmp_path / "latent_drift.csv")
+    assert len(drift) == 2 * 5                        # k = 0..4 per env, unfilled rows kept with NaN
+    assert drift.cost_real.notna().sum() == 4         # the two k = 0 sanity rows and the two step-5 rows
 
 
 def test_trace_needs_a_deterministic_state_head():

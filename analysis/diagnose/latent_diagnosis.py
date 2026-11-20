@@ -162,7 +162,7 @@ def load_run(key: str, banks: dict, device: str) -> dict:
         start_state = [adapter.goal(data, row) for row in start_rows]
         goal_state = [adapter.goal(data, row + offset) for row in start_rows]
 
-    real = pd.DataFrame({"env": trace["real_env"], "step": trace["real_step"]})
+    real = pd.DataFrame({"env": trace["real_env"], "step": trace["real_step"], "alive": trace["real_alive"]})
     real["episode"] = [episodes[env] for env in real.env]
     real["success"] = [bool(successes[env]) for env in real.env]
     real_z = trace["real_z"]
@@ -384,7 +384,7 @@ def plot_term_correlations(terms: pd.DataFrame, runs: dict) -> None:
                xlabel=FORMULAS["E2_term"])
         ax.legend(fontsize=8)
     fig.suptitle(f"{NAMES['E2_term']}; error bars 95% bootstrap CI over episodes (10,000 resamples), "
-                 "seed 8902 × 30, real frames at each replan", fontsize=9, color=INK_2)
+                 "seed 8902 × 30, real frames at every env step", fontsize=9, color=INK_2)
     fig.tight_layout()
     fig.savefig(OUT / "e2_per_term.png", dpi=150)
     plt.close(fig)

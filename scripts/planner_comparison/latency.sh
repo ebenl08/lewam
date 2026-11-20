@@ -7,13 +7,15 @@
 # Protocol as PG scripts/latency/measure_cem_latency.sh: 10 envs, eval_budget 50, rh 1, action_block 5, batch 1
 # (one env per plan call), CUDA events, first replan dropped.
 #   LeWAM arms (lewam conda env, this repo): native / grid_w1 / grid_wH, eval.timing=single
+#   beam arms (scripts/beam_tree/run_jobs.sh overrides, no gradient refinement): beam_topk_goal / beam_soft_t3_goal
+#     (B8 C4) and beam_chains_b32c1; not in --jobs, run from their own job file
 #   our arms (swm conda env, PG entries unchanged, read-only configs): cem 300x10, icem_faithful 300x10 (goal_mse),
 #     leflow_cem / leflow_icem 300x5 fitted prior, warm k16, clamp (rollout_goal), as the PushT SR runs
 #   throughput: LeWAM native paper cell batched (eval.timing=batched, 50 envs), seeds 42 0 1, vs paper Table 6
 # Outputs: data/planner_comparison/p2/latency/pusht/<arm>/h<h>/<seed>/ (timing.json, results.txt, config.json).
 # Run from playground/lewam/:
 #   bash scripts/planner_comparison/latency.sh --jobs > logs/planner_comparison/latency_jobs.tsv
-#   GPUS="3 4 6" WAIT=1 bash scripts/planner_comparison/latency.sh   (nvidia-smi indices, never 2 or 8)
+#   GPUS="3 4 6" WAIT=1 bash scripts/planner_comparison/latency.sh   (nvidia-smi indices, never 2; refused on uncorrected ECC errors unless IGNORE_ECC=1)
 #   TEST_RUN=1   print the command of the first seed of every config, run nothing
 #   SEED_LIST="10247 15783"   run a round on a seed subset (finished runs are skipped)
 #   CALIBRATE=1  run cem h5 on every GPU in parallel (seeds of SEED_LIST) into calibration/<gpu>/ to compare GPUs
@@ -27,8 +29,9 @@ LW_PYTHON=${LW_PYTHON:-/home/eben/.conda/envs/lewam/bin/python}
 PG_PYTHON=${PG_PYTHON:-/home/eben/.conda/envs/swm/bin/python}
 GROUP=planner_comparison
 JOBS=${JOBS:-logs/${GROUP}/latency_jobs.tsv}
-QUEUE=logs/${GROUP}/latency_queue.tsv
-FAILED=logs/${GROUP}/latency_failed.tsv
+TAG=${TAG:-latency}  # prefix of queue, failed list and worker logs, so a new launch keeps older logs
+QUEUE=logs/${GROUP}/${TAG}_queue.tsv
+FAILED=logs/${GROUP}/${TAG}_failed.tsv
 ROOT=${ROOT:-$LW/data/${GROUP}/p2/latency/pusht}  # stage-breakdown runs: ROOT=$PWD/data/planner_comparison/p2/breakdown/pusht
 CORE_BASE=${CORE_BASE:-256}  # worker k uses cores CORE_BASE + 8k .. + 8k + 7
 TEST_RUN=${TEST_RUN:-0}
@@ -53,19 +56,27 @@ gpu_uuid() {  # UUID of nvidia-smi GPU $1; CUDA indices skip smi GPU 2, so pin b
 read -ra gpus <<< "${GPUS:?set GPUS to idle nvidia-smi GPU indices, one worker each}"
 (( ${#gpus[@]} <= 4 )) || { echo "at most 4 GPUs" >&2; exit 1; }
 for i in "${!gpus[@]}"; do
-  [[ ${gpus[$i]} == 2 || ${gpus[$i]} == 8 ]] && { echo "nvidia-smi GPU ${gpus[$i]} is off limits" >&2; exit 1; }
+  [[ ${gpus[$i]} == 2 ]] && { echo "nvidia-smi GPU 2 is off limits" >&2; exit 1; }
+  ecc=$(nvidia-smi -i "${gpus[$i]}" --query-gpu=ecc.errors.uncorrected.volatile.total --format=csv,noheader)
+  [[ $ecc == 0 || ${IGNORE_ECC:-0} == 1 ]] || { echo "nvidia-smi GPU ${gpus[$i]}: $ecc uncorrected ECC errors" >&2; exit 1; }
   gpus[$i]=$(gpu_uuid "${gpus[$i]}") || exit 1
 done
 
 lewam_cmd() {  # $1 arm, $2 h, $3 seed, $4 output folder, $5 envs per plan call (1 = single), $6 proposals N (optional)
   local arm=$1 h=$2 seed=$3 out=$4 batch=${5:-1} samples=${6:-}
   local args=(--config-name=pusht policy=lewam-pusht eval.dataset_name=pusht_expert_train eval.save_video=false
-    eval.mode=lewam_plan eval.plan_mode=grad eval.grad_all_k=true eval.grad_tr=0.01 eval.exec_actions=5)
+    eval.mode=lewam_plan eval.exec_actions=5)
+  local grad=(eval.plan_mode=grad eval.grad_all_k=true eval.grad_tr=0.01)
+  local beam=(eval.plan_mode=beam eval.rollout_steps="$h" eval.beam_score=goal)  # as scripts/beam_tree/run_jobs.sh
   case $arm in
-    native) args+=(eval.rollout_steps="$h") ;;
-    grid_w1) args+=(eval.rollout_steps="$h" eval.horizon_schedule=constant) ;;
-    grid_wH) args+=(eval.rollout_steps="$h" eval.horizon_schedule=constant eval.plan_cost_window="$h") ;;
-    throughput) args+=(eval.num_eval=50 eval.timing=batched) ;;  # paper cell: rollout_steps from h0 = 5
+    native) args+=("${grad[@]}" eval.rollout_steps="$h") ;;
+    grid_w1) args+=("${grad[@]}" eval.rollout_steps="$h" eval.horizon_schedule=constant) ;;
+    grid_wH) args+=("${grad[@]}" eval.rollout_steps="$h" eval.horizon_schedule=constant eval.plan_cost_window="$h") ;;
+    throughput) args+=("${grad[@]}" eval.num_eval=50 eval.timing=batched) ;;  # paper cell: rollout_steps from h0 = 5
+    beam_topk_goal) args+=("${beam[@]}" eval.beam_width=8 eval.beam_children=4 eval.beam_prune=topk) ;;
+    beam_soft_t3_goal) args+=("${beam[@]}" eval.beam_width=8 eval.beam_children=4 eval.beam_prune=soft
+      eval.beam_elite=true eval.beam_tau=3.0) ;;
+    beam_chains_b32c1) args+=("${beam[@]}" eval.beam_width=32 eval.beam_children=1 eval.beam_prune=topk) ;;
   esac
   if [[ $arm != throughput ]]; then
     if (( batch > 1 )); then args+=(eval.num_eval="$batch" eval.timing=batched)  # one plan call over all envs
@@ -125,7 +136,7 @@ run_config() {  # $1 gpu, $2 worker index, $3 arm, $4 h, $5 optional output root
     if [[ $TEST_RUN == 1 ]]; then echo "$cmd"; return; fi
     [[ -f $out/timing.json ]] && continue
     mkdir -p "$out"
-    printf '%s\t%s\t%s\n' "$gpu" "$cores" "$(date +%FT%T)" > "$out/gpu.txt"
+    printf '%s\t%s\t%s\t%s\n' "$gpu" "$cores" "$(date +%FT%T)" "$(cut -d' ' -f1-3 /proc/loadavg)" > "$out/gpu.txt"
     echo "===== [worker $worker] $(date +%T) $arm h=$h seed=$seed on $gpu cores $cores ====="
     env CUDA_VISIBLE_DEVICES="$gpu" OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 MUJOCO_GL=egl \
       taskset -c "$cores" bash -c "$cmd" > "$out/log.txt" 2>&1 \
@@ -141,7 +152,7 @@ fi
 if [[ ${CALIBRATE:-0} == 1 ]]; then
   for i in "${!gpus[@]}"; do
     run_config "${gpus[$i]}" "$i" cem 5 "$LW/data/${GROUP}/p2/latency/calibration/${gpus[$i]}" \
-      > "logs/${GROUP}/latency_calibration_${i}.log" 2>&1 &
+      > "logs/${GROUP}/${TAG}_calibration_${i}.log" 2>&1 &
   done
   wait
   echo "calibration done"
@@ -159,7 +170,7 @@ worker() {  # $1 gpu, $2 worker index
 
 cp "$JOBS" "$QUEUE"
 for i in "${!gpus[@]}"; do
-  worker "${gpus[$i]}" "$i" > "logs/${GROUP}/latency_worker_${i}.log" 2>&1 &
+  worker "${gpus[$i]}" "$i" > "logs/${GROUP}/${TAG}_worker_${i}.log" 2>&1 &
   sleep 2
 done
 echo "launched ${#gpus[@]} latency workers, $(wc -l < "$QUEUE") configs"

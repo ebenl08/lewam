@@ -5,7 +5,8 @@
 #   repro: native paper cell, paper protocol (num_eval 50, the task config's offset and budget).
 #   grid:  arm x (h, rh) cell on the PushT protocol of the stable-worldmodel baselines: pusht_expert_train.h5,
 #          offset 25, budget 50, 30 episodes. Cell: eval.rollout_steps=h, eval.exec_actions=5*rh.
-# Arms: native = horizon_schedule adaptive (LeWAM default); grid_w1 = constant; grid_wH = constant + cost window h.
+# Arms: native = horizon_schedule adaptive (LeWAM default); native_wH = adaptive + cost window h (clamped to the
+# scored step); grid_w1 = constant; grid_wH = constant + cost window h.
 # Run from playground/lewam/:
 #   python scripts/planner_comparison/make_jobs.py --phase repro > logs/planner_comparison/jobs.tsv
 #   GPUS="1 1 1 1 3 3 3 3" bash scripts/planner_comparison/run.sh   (nvidia-smi indices, never 2 or 8)
@@ -13,11 +14,12 @@
 
 PYTHON=${PYTHON:-/home/eben/.conda/envs/lewam/bin/python}
 GROUP=${GROUP:-planner_comparison}
-JOBS=${JOBS:-logs/${GROUP}/jobs.tsv}
-QUEUE=${QUEUE:-logs/${GROUP}/queue.tsv}
-FAILED=logs/${GROUP}/failed.tsv
+LOGS=${LOGS:-logs/${GROUP}}   # jobs, queue, failed and worker logs; set per batch so older logs are kept
+JOBS=${JOBS:-${LOGS}/jobs.tsv}
+QUEUE=${QUEUE:-${LOGS}/queue.tsv}
+FAILED=${LOGS}/failed.tsv
 TEST_RUN=${TEST_RUN:-0}
-mkdir -p logs/${GROUP}
+mkdir -p "$LOGS"
 
 gpu_uuid() {  # UUID of nvidia-smi GPU $1; CUDA indices skip smi GPU 2, so pin by UUID
   local uuid
@@ -50,6 +52,7 @@ run_job() {  # $1 gpu, then the job columns
       eval.save_video=false eval.rollout_steps="$h" eval.exec_actions=$((5 * rh)))
     case $arm in
       native) ;;
+      native_wH) task+=(eval.plan_cost_window="$h") ;;
       grid_w1) task+=(eval.horizon_schedule=constant) ;;
       grid_wH) task+=(eval.horizon_schedule=constant eval.plan_cost_window="$h") ;;
       *) echo "unknown arm $arm" >&2; return 1 ;;
@@ -83,7 +86,7 @@ if [[ $TEST_RUN == 1 ]]; then
   exit 0
 fi
 for i in "${!gpus[@]}"; do
-  worker "${gpus[$i]}" "$i" > "logs/${GROUP}/worker_${i}.log" 2>&1 &
+  worker "${gpus[$i]}" "$i" > "${LOGS}/worker_${i}.log" 2>&1 &
   sleep 2
 done
 echo "launched ${#gpus[@]} workers, $(wc -l < "$QUEUE") jobs (${GROUP})"

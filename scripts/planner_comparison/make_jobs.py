@@ -3,7 +3,7 @@
 Prints one tab-separated job per missing run: phase, env, arm, h, rh, seed. A run is skipped when its output folder
 already holds a finished results.txt.
 - repro (P1a): `native` paper cell (h = rh = 0 means the paper default: h0 blocks, rh 1), seeds 42 / 0 / 1.
-- grid (P1b): 3 arms x 9 (h, rh) cells x the 25 baseline seeds, PushT.
+- grid (P1b): 4 arms x 9 (h, rh) cells x the 25 baseline seeds, PushT.
 
 CLI (from playground/lewam/):
     python scripts/planner_comparison/make_jobs.py --phase repro > logs/planner_comparison/jobs.tsv
@@ -19,7 +19,7 @@ ROOT = Path('data') / 'planner_comparison'
 REPRO_ENVS = ('pusht', 'tworoom', 'reacher')
 REPRO_SEEDS = (42, 0, 1)
 GRID_ENVS = ('pusht',)
-ARMS = ('native', 'grid_w1', 'grid_wH')
+ARMS = ('native', 'native_wH', 'grid_w1', 'grid_wH')
 CELLS = [(h, rh) for h in (2, 5, 10) for rh in (1, 2, 5, 10) if rh <= h]
 # the 25 seeds of PG scripts/eval/cem_vs_icem_seeds25/make_jobs.py
 SEEDS = sorted([3679, 12083, 13483, 14596, 25661,
